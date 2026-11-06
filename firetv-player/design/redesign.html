@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marquee — TV direction</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@700;900&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ground: #0E0D0B;
+    --raised: #16130E;
+    --card: #1B1712;
+    --rule: #332C22;
+    --ink: #F6F1E7;
+    --ink-2: #C9BFB0;
+    --ink-3: #9C9182;
+    --accent: #F2B441;
+    --accent-light: #FFD98A;
+    --on-accent: #161006;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #080706; color: var(--ink); font-family: Roboto, system-ui, sans-serif; }
+  .board { width: 2048px; margin: 0 auto; padding: 48px 64px 80px; }
+  .board-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 28px; }
+  .board-head h1 { margin: 0; font: 900 44px/1 "Roboto Condensed", sans-serif; letter-spacing: -1px; }
+  .board-head p { margin: 0; color: var(--ink-3); font-size: 18px; }
+  .tokens { display: flex; gap: 10px; margin-bottom: 36px; }
+  .sw { width: 132px; height: 76px; border-radius: 10px; border: 1px solid var(--rule); display: flex; align-items: flex-end; padding: 10px; font-size: 13px; color: var(--ink-2); }
+  .frame { position: relative; width: 1920px; height: 1080px; overflow: hidden; background: var(--ground); margin-bottom: 44px; box-shadow: 0 14px 50px rgba(0,0,0,.55); }
+  .topbar { height: 88px; padding: 0 48px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(246,241,231,.07); }
+  .brand { font: 900 38px/1 "Roboto Condensed", sans-serif; letter-spacing: -0.8px; }
+  nav { display: flex; gap: 38px; font-size: 20px; color: var(--ink-3); }
+  nav .active { color: var(--accent); font-weight: 700; }
+  nav .profile { color: var(--accent); border: 2px solid var(--accent); border-radius: 8px; padding: 6px 14px; font-weight: 700; }
+  .content { padding: 30px 48px 0; }
+  .group-title { margin: 0; font: 900 46px/1 "Roboto Condensed", sans-serif; letter-spacing: -0.8px; }
+  .row-title { margin: 8px 0 14px; font: 700 26px/1.2 "Roboto Condensed", sans-serif; color: var(--ink-2); }
+  .row { display: flex; gap: 16px; align-items: flex-start; }
+  .card { position: relative; flex: none; transition: transform .12s ease; }
+  .art { position: relative; border-radius: 10px; overflow: hidden; background: var(--card); border: 1px solid var(--rule); }
+  .art img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .poster-lg .art { width: 226px; height: 330px; }
+  .poster-lg .name { margin-top: 8px; font-size: 18px; line-height: 1.25; height: 46px; overflow: hidden; color: var(--ink); }
+  .poster .art { width: 166px; height: 240px; }
+  .poster .name { margin-top: 8px; font-size: 17px; line-height: 1.25; height: 44px; overflow: hidden; color: var(--ink); }
+  .focused { transform: scale(1.03); z-index: 5; }
+  .focused .art::after { content: ""; position: absolute; inset: 0; border: 4px solid var(--accent); border-radius: 10px; }
+  .focused .name { color: var(--accent); }
+  .live .art { width: 260px; height: 160px; display: flex; align-items: center; justify-content: center; }
+  .live .art img { width: 62%; height: 62%; object-fit: contain; }
+  .live .name { position: absolute; left: 0; right: 0; bottom: 0; padding: 9px 10px; background: rgba(0,0,0,.68); font-size: 17px; text-align: center; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .live.focused .art::after { content: ""; position: absolute; inset: 0; border: 4px solid var(--accent); border-radius: 10px; }
+  .section-gap { height: 30px; }
+  .hero { position: relative; height: 450px; background-size: cover; background-position: center 30%; }
+  .hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(to bottom, rgba(14,13,11,0) 10%, rgba(14,13,11,.45) 50%, rgba(14,13,11,.96) 100%); }
+  .hero-content { position: absolute; left: 0; right: 0; bottom: 0; padding: 0 48px 30px; z-index: 2; }
+  .hero h2 { margin: 0 0 10px; font: 900 58px/1.02 "Roboto Condensed", sans-serif; letter-spacing: -1.4px; max-width: 1280px; }
+  .hero .meta { margin: 0 0 10px; color: var(--ink-2); font-size: 20px; }
+  .hero .plot { margin: 0 0 18px; max-width: 1080px; color: #DCD5C7; font-size: 20px; line-height: 1.42; }
+  .play-row { display: flex; align-items: center; gap: 22px; }
+  .play { background: var(--accent); color: var(--on-accent); font-weight: 700; font-size: 18px; letter-spacing: .2px; padding: 16px 36px; border-radius: 8px; }
+  .season-label { color: var(--ink-2); font-size: 18px; }
+  .seasons { padding: 22px 48px; display: flex; gap: 12px; border-bottom: 1px solid rgba(246,241,231,.07); }
+  .chip { padding: 11px 24px; border: 2px solid var(--rule); border-radius: 8px; color: var(--ink-3); font-size: 17px; }
+  .chip.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+  .episodes { padding: 10px 48px 48px; }
+  .ep-head { margin: 16px 0 12px; font: 900 30px/1 "Roboto Condensed", sans-serif; letter-spacing: -0.4px; }
+  .ep { display: flex; align-items: center; gap: 18px; padding: 12px; margin-bottom: 10px; background: var(--card); border: 1px solid var(--rule); border-radius: 10px; }
+  .ep.focused { border: 3px solid var(--accent); }
+  .thumb { position: relative; flex: none; width: 220px; height: 124px; border-radius: 8px; overflow: hidden; background: #12100D; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .num { position: absolute; left: 7px; bottom: 7px; padding: 4px 9px; background: rgba(0,0,0,.72); border-radius: 5px; font-size: 14px; font-weight: 700; }
+  .ep-body { flex: 1; min-width: 0; }
+  .ep-title { margin: 0 0 4px; font-size: 24px; font-weight: 700; color: var(--ink); }
+  .ep.focused .ep-title { color: var(--accent); }
+  .ep-meta { margin: 0 0 5px; color: var(--ink-3); font-size: 18px; }
+  .ep-plot { margin: 0; color: var(--ink-2); font-size: 18px; line-height: 1.35; max-height: 48px; overflow: hidden; }
+  .before { display: flex; gap: 24px; margin-top: 20px; }
+  .before figure { margin: 0; flex: 1; }
+  .before img { width: 100%; border-radius: 10px; border: 1px solid var(--rule); display: block; }
+  .before figcaption { margin-top: 8px; color: var(--ink-3); font-size: 16px; }
+  .notes { display: flex; gap: 48px; margin-top: 34px; }
+  .notes > div { flex: 1; }
+  .notes h3 { font: 900 26px/1.1 "Roboto Condensed", sans-serif; margin: 0 0 12px; }
+  .notes p, .notes li { color: var(--ink-2); font-size: 17px; line-height: 1.5; }
+  .notes ul { margin: 0; padding-left: 20px; }
+  table.scores { width: 100%; border-collapse: collapse; font-size: 16px; }
+  table.scores td { padding: 5px 8px; border-bottom: 1px solid rgba(246,241,231,.07); color: var(--ink-2); }
+  table.scores td:first-child { color: var(--ink); }
+  table.scores td:last-child { color: var(--accent); font-weight: 700; text-align: right; }
+  .frame-label { position: absolute; top: 12px; right: 16px; font-size: 13px; color: var(--ink-3); z-index: 10; }
+</style>
+</head>
+<body>
+<div class="board">
+  <div class="board-head">
+    <h1>Marquee — TV direction</h1>
+    <p>TV redesign direction · 1920×1080 · amber on warm black · condensed display · ring-over-art focus</p>
+  </div>
+  <div class="tokens">
+    <div class="sw" style="background:#0E0D0B">ground #0E0D0B</div>
+    <div class="sw" style="background:#1B1712">card #1B1712</div>
+    <div class="sw" style="background:#F2B441;color:#161006">accent #F2B441</div>
+    <div class="sw" style="background:#F6F1E7;color:#161006">ink #F6F1E7</div>
+    <div class="sw" style="background:#C9BFB0;color:#161006">ink-2 #C9BFB0</div>
+  </div>
+
+  <!-- HOME -->
+  <section class="frame">
+    <div class="frame-label">HOME</div>
+    <div class="topbar">
+      <div class="brand">MARQUEE</div>
+      <nav><span class="active">HOME</span><span>LIVE TV</span><span>MOVIES</span><span>SERIES</span><span>FAVORITES</span><span>SEARCH</span><span class="profile">ME</span></nav>
+    </div>
+    <div class="content">
+      <h2 class="group-title">FEATURED</h2>
+      <div class="row-title">TOP 2025 MOVIES</div>
+      <div class="row">
+        <div class="card poster-lg focused">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/4mUU9ZdhBbcZpKVnM8PLsLieTD8.jpg" alt=""></div>
+          <div class="name">A Runaway Bride for Christmas</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/bvatbJxHHeF0hFzhfQgqA4pbx4b.jpg" alt=""></div>
+          <div class="name">Bloodstained Ivory</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/isNjadTxFWks3L36anDy24K3qqu.jpg" alt=""></div>
+          <div class="name">Written in the Sand</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/E3dPHPJigkXwuiE0n1vzz0se8a.jpg" alt=""></div>
+          <div class="name">Happy Gilmore 2</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/8bHWetIMhtoFbPtEHblbdiHO5WG.jpg" alt=""></div>
+          <div class="name">You're Dead to Me</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/qy0x02q2kZ5pttb7YnA03y6jWma.jpg" alt=""></div>
+          <div class="name">The Plantation</div>
+        </div>
+        <div class="card poster-lg">
+          <div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/hjwRewif47Tcxri4O4a62DVsyDz.jpg" alt=""></div>
+          <div class="name">Ricky</div>
+        </div>
+      </div>
+
+      <div class="section-gap"></div>
+      <h2 class="group-title">LIVE TV</h2>
+      <div class="row-title">EU | UK GENERAL</div>
+      <div class="row">
+        <div class="card live">
+          <div class="art"><img src="https://lo1.in/uk/bbc1.png" alt=""><div class="name">UK| BBC 1 HD</div></div>
+        </div>
+        <div class="card live">
+          <div class="art"><img src="https://lo1.in/uk/bbc2.png" alt=""><div class="name">UK| BBC 2 HD</div></div>
+        </div>
+        <div class="card live">
+          <div class="art"><img src="https://lo1.in/uk/bbc4.png" alt=""><div class="name">UK| BBC 4 / CBEEBIES</div></div>
+        </div>
+        <div class="card live">
+          <div class="art"><img src="https://lo1.in/uk/cbbc.png" alt=""><div class="name">UK| CBBC HD</div></div>
+        </div>
+        <div class="card live">
+          <div class="art"><img src="https://lo1.in/uk/itv0.png" alt=""><div class="name">UK| ITV 1 HD</div></div>
+        </div>
+      </div>
+
+      <div class="section-gap"></div>
+      <h2 class="group-title">MOVIES</h2>
+      <div class="row-title">TOP 2024 MOVIES</div>
+      <div class="row">
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/rEHNtqsreine1bQ0Di3feYzgQHS.jpg" alt=""></div><div class="name">Christmas on the Ranch</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/f2fAJUg2zRBSxO2R6xvakgUtyM4.jpg" alt=""></div><div class="name">Day Labor</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/b0aEawu1LVgGIx9yMovKvFZkq7J.jpg" alt=""></div><div class="name">Danger in the Dorm</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/o9EyKeQ7tcmNfO96t58T8jNvK0N.jpg" alt=""></div><div class="name">Half Baked: Totally High</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/y66piAnwfPDZL8bzdHMOcOjqyqe.jpg" alt=""></div><div class="name">Daft State</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/z7UvGuQ8pSs0JJP3QYCAIsNzYXI.jpg" alt=""></div><div class="name">Millers in Marriage</div></div>
+        <div class="card poster"><div class="art"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/szuP2HIKCPPgUdEJFwx4GKFdw96.jpg" alt=""></div><div class="name">He Loves Me Not</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SERIES DETAIL -->
+  <section class="frame">
+    <div class="frame-label">SERIES DETAIL</div>
+    <div class="hero" style="background-image:url('https://image.tmdb.org/t/p/w1280/a76A9EYuIdP2kU1CnoGnE13Eb81.jpg')">
+      <div class="hero-content">
+        <h2>Drive Hard: The Maloof Way</h2>
+        <div class="meta">2022 · Reality · ★ 8</div>
+        <p class="plot">The Maloofs, a lovable family of gearheads and stunt drivers, use their passion and skill to build car engines and perform wild feats behind the wheel.</p>
+        <div class="play-row">
+          <span class="play">PLAY</span>
+          <span class="season-label">Season 1 · 8 episodes</span>
+        </div>
+      </div>
+    </div>
+    <div class="seasons">
+      <span class="chip active">Season 1</span>
+      <span class="chip">Season 2</span>
+      <span class="chip">Season 3</span>
+    </div>
+    <div class="episodes">
+      <div class="ep-head">EPISODES</div>
+      <div class="ep focused">
+        <div class="thumb"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/AreUldTLWKOcunX6Qy5wVpDFcNt.jpg" alt=""><span class="num">E1</span></div>
+        <div class="ep-body">
+          <div class="ep-title">Into the Inferno</div>
+          <div class="ep-meta">34m · ★ 8</div>
+          <div class="ep-plot">The Maloofs take on a client who needs help prepping for a race with a rival. Sammy and his twin daughters perform stunts for a film.</div>
+        </div>
+      </div>
+      <div class="ep">
+        <div class="thumb"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/hJBoULxulfa0EO9x2WMFlJpm0jr.jpg" alt=""><span class="num">E2</span></div>
+        <div class="ep-body">
+          <div class="ep-title">Rivalry Road</div>
+          <div class="ep-meta">31m · ★ 8</div>
+          <div class="ep-plot">The bad blood between Sammy and a former client melts away at the prospect of joining forces to best a mutual enemy on the track.</div>
+        </div>
+      </div>
+      <div class="ep">
+        <div class="thumb"><img src="https://image.tmdb.org/t/p/w600_and_h900_bestv2/kb0ESds5tkNV79OeHurjqlWPuYb.jpg" alt=""><span class="num">E3</span></div>
+        <div class="ep-body">
+          <div class="ep-title">Sneaky Pete</div>
+          <div class="ep-meta">31m · ★ 8</div>
+          <div class="ep-plot">A driver asks Sammy for a few upgrades — including nitrous — in hopes of taking out a cocky competitor. Sammy performs stunts for a car commercial.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="notes">
+    <div>
+      <h3>Audit — before</h3>
+      <table class="scores">
+        <tr><td>Concept on the pixel</td><td>2</td></tr>
+        <tr><td>Not the category average</td><td>2</td></tr>
+        <tr><td>Not the skill's own average</td><td>3</td></tr>
+        <tr><td>Hierarchy</td><td>3</td></tr>
+        <tr><td>Typography</td><td>2</td></tr>
+        <tr><td>Colour</td><td>2</td></tr>
+        <tr><td>Richness</td><td>3</td></tr>
+        <tr><td>Rhythm and space</td><td>3</td></tr>
+        <tr><td>Craft details</td><td>2</td></tr>
+        <tr><td>TV native fluency</td><td>3</td></tr>
+        <tr><td>Signature</td><td>1</td></tr>
+        <tr><td>Feature test</td><td>2</td></tr>
+      </table>
+    </div>
+    <div>
+      <h3>Five changes</h3>
+      <ul>
+        <li>Replace the generic blue with a warm marquee amber; one accent for focus/action.</li>
+        <li>Draw the focus ring <em>over</em> artwork (the old ring sat behind the poster image).</li>
+        <li>Condensed display type and a 15–18sp floor; card labels were 12sp.</li>
+        <li>Add a FEATURED large-poster row as the single hero; keep the Plex rows below.</li>
+        <li>Warm the ground and enlarge margins to 48dp; remove the white focus flash.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Signature</h3>
+      <p><strong>Marquee focus.</strong> The amber ring sits on the artwork, the card lifts 3% with a 120 ms settle, and the label turns amber. Reduced motion keeps the ring and drops the scale.</p>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div>
+      <h3>Before — home</h3>
+      <div class="before"><figure><img src="before-home.png" alt=""><figcaption>Blue-on-black, 12sp labels, no hero, white focus flash.</figcaption></figure></div>
+    </div>
+    <div>
+      <h3>Before — movies</h3>
+      <div class="before"><figure><img src="before-movies.png" alt=""><figcaption>Poster ring is hidden behind the image; the focused card looked unfocused.</figcaption></figure></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

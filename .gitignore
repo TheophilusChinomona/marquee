@@ -1,0 +1,10 @@
+.env
+.env.*
+channel-results/
+goose-*.tar.bz2
+.orca/
+*.log
+*.keystore
+*.jks
+*.apk
+.DS_Store

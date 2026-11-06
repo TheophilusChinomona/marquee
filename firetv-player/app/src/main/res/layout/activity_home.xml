@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:background="@color/panel"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="24dp"
+        android:paddingEnd="24dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-condensed"
+            android:letterSpacing="-0.02"
+            android:text="MARQUEE"
+            android:textColor="@color/text"
+            android:textSize="38sp"
+            android:textStyle="bold" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <Button
+            android:id="@+id/navHome"
+            style="@style/NavButton"
+            android:text="HOME" />
+
+        <Button
+            android:id="@+id/navLive"
+            style="@style/NavButton"
+            android:text="LIVE TV" />
+
+        <Button
+            android:id="@+id/navMovies"
+            style="@style/NavButton"
+            android:text="MOVIES" />
+
+        <Button
+            android:id="@+id/navSeries"
+            style="@style/NavButton"
+            android:text="SERIES" />
+
+        <Button
+            android:id="@+id/navFavorites"
+            style="@style/NavButton"
+            android:layout_marginStart="12dp"
+            android:text="FAVORITES" />
+
+        <Button
+            android:id="@+id/navSearch"
+            style="@style/NavButton"
+            android:layout_marginStart="12dp"
+            android:text="SEARCH" />
+
+        <Button
+            android:id="@+id/navProfile"
+            style="@style/NavButton"
+            android:layout_marginStart="12dp"
+            android:ellipsize="end"
+            android:maxWidth="180dp"
+            android:singleLine="true"
+            android:text="ME" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <androidx.core.widget.NestedScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:descendantFocusability="afterDescendants"
+            android:fillViewport="true">
+
+            <LinearLayout
+                android:id="@+id/rows"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="48dp" />
+        </androidx.core.widget.NestedScrollView>
+
+        <ProgressBar
+            android:id="@+id/progress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:padding="24dp"
+            android:textColor="@color/text_dim"
+            android:textSize="16sp" />
+    </FrameLayout>
+
+</LinearLayout>

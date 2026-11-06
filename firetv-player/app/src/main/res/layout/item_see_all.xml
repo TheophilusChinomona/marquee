@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="166dp"
+    android:layout_height="290dp"
+    android:layout_margin="6dp"
+    android:background="@drawable/card_bg"
+    android:focusable="true"
+    android:focusableInTouchMode="true">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:duplicateParentState="true"
+        android:gravity="center"
+        android:text="SEE ALL"
+        android:textColor="@color/item_text"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+</FrameLayout>

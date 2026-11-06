@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Marquee</string>
+    <string name="login_title">Marquee</string>
+    <string name="login_subtitle">Sign in to your provider</string>
+    <string name="hint_server">http://server:port</string>
+    <string name="hint_username">Username</string>
+    <string name="hint_password">Password</string>
+    <string name="connect">Connect</string>
+    <string name="connecting">Connecting…</string>
+    <string name="login_failed">Connection failed. Check server, username and password.</string>
+    <string name="live">LIVE</string>
+    <string name="movies">MOVIES</string>
+    <string name="series">SERIES</string>
+    <string name="categories">Categories</string>
+    <string name="no_streams">No items in this category.</string>
+</resources>

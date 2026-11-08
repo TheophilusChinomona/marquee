@@ -1,11 +1,14 @@
 package com.orca.iptv
 
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Locale
 
 class XtreamClient(server: String, private val user: String, private val pass: String) {
 
@@ -38,6 +41,15 @@ class XtreamClient(server: String, private val user: String, private val pass: S
         val releaseDate: String,
         val rating: String,
         val durationMinutes: Int
+    )
+
+    data class EpgProgram(
+        val id: String,
+        val title: String,
+        val description: String,
+        val startMs: Long,
+        val endMs: Long,
+        val hasArchive: Boolean
     )
 
     data class SeriesDetails(
@@ -192,6 +204,57 @@ class XtreamClient(server: String, private val user: String, private val pass: S
             rating = info.opt("rating")?.toString().orEmpty(),
             durationMinutes = if (duration > 0) duration / 60 else info.optInt("duration", 0)
         )
+    }
+
+    fun shortEpg(streamId: String, limit: Int = 8): List<EpgProgram> {
+        val url = "$base/player_api.php?$auth&action=get_short_epg&stream_id=${enc(streamId)}&limit=$limit"
+        val text = fetch(url)
+        val arr = if (text.trimStart().startsWith("[")) {
+            JSONArray(text)
+        } else {
+            JSONObject(text).optJSONArray("epg_listings") ?: JSONArray()
+        }
+        val out = ArrayList<EpgProgram>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val startMs = timestamp(o, "start_timestamp", "start")
+            val endMs = timestamp(o, "stop_timestamp", "end")
+            if (startMs <= 0L || endMs <= startMs) continue
+            val title = epgText(o.optString("title")).ifBlank { "Live programme" }
+            val id = o.optString("id").ifBlank { "${streamId}_$startMs" }
+            out.add(
+                EpgProgram(
+                    id = id,
+                    title = title,
+                    description = epgText(o.optString("description")),
+                    startMs = startMs,
+                    endMs = endMs,
+                    hasArchive = o.optInt("has_archive", 0) == 1
+                )
+            )
+        }
+        return out.sortedBy { it.startMs }
+    }
+
+    private fun timestamp(o: JSONObject, timestampKey: String, textKey: String): Long {
+        val raw = o.optLong(timestampKey, 0L)
+        if (raw > 0L) return raw * 1000L
+        val text = o.optString(textKey).trim()
+        if (text.isEmpty()) return 0L
+        text.toLongOrNull()?.let { return it * 1000L }
+        return runCatching {
+            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).parse(text)?.time ?: 0L
+        }.getOrDefault(0L)
+    }
+
+    private fun epgText(raw: String): String {
+        val value = raw.trim()
+        if (value.length < 4 || !value.matches(Regex("^[A-Za-z0-9+/=\\s]+$"))) return raw.trim()
+        val decoded = runCatching {
+            String(Base64.decode(value, Base64.DEFAULT), Charsets.UTF_8)
+        }.getOrNull() ?: return raw.trim()
+        val printable = decoded.all { it.code == 9 || it.code == 10 || it.code == 13 || it.code >= 32 }
+        return if (printable && decoded.isNotBlank()) decoded.trim() else raw.trim()
     }
 
     fun liveUrl(id: String) = "$base/live/$user/$pass/$id.ts"

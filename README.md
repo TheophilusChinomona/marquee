@@ -11,7 +11,9 @@ Marquee is a personal Android TV / Fire TV IPTV client built with Kotlin and Jet
 - **Home** — cinematic billboard with Play, My List and Details; Continue Watching, Live Now, For You, Because You Watched, Top 10, New Releases and My List rails.
 - **Continue Watching** — per-profile playback history with resume positions, recorded by `HistoryStore`.
 - **Recommendations** — an on-device hybrid baseline: category affinity from history and favorites, stable novelty, and a two-per-category diversity cap. Surfaced as For You, Because You Watched and Top 10.
+- **Live guide** — EPG timeline with a live “now” marker, channel rows, programme cells, per-profile My List toggles, and a graceful no-guide-data fallback.
 - **Browse** — live channels in a 4-column grid; movies and series in a 6-column 2:3 poster grid, with shared Marquee navigation.
+- **Player** — custom 10-foot overlay with title, LIVE badge, play/pause, seek and time for VOD; controls auto-hide.
 - **Detail** — cinematic movie page with backdrop, metadata, plot, Play/Resume, My List and More Like This.
 - **Series detail** — backdrop, metadata, seasons, episode cards, and playback; episode progress feeds Continue Watching.
 - **Search** — local search across the loaded live, VOD, and series catalogs.

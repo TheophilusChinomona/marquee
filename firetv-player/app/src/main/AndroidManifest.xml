@@ -39,6 +39,11 @@
         </activity>
 
         <activity
+            android:name=".LiveGuideActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="true" />
+
+        <activity
             android:name=".BrowseActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="false" />

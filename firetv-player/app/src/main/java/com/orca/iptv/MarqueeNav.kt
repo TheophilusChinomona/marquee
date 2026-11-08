@@ -178,7 +178,7 @@ class MarqueeNav(
         fun navigate(context: Context, tab: String) {
             when (tab) {
                 "home" -> context.startActivity(homeIntent(context, null))
-                "live" -> context.startActivity(BrowseActivity.intent(context, MODE_LIVE, ""))
+                "live" -> context.startActivity(LiveGuideActivity.intent(context))
                 "movies" -> context.startActivity(BrowseActivity.intent(context, MODE_VOD, ""))
                 "series" -> context.startActivity(BrowseActivity.intent(context, MODE_SERIES, ""))
                 "list" -> context.startActivity(homeIntent(context, "list"))

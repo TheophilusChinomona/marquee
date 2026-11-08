@@ -1,27 +1,28 @@
 # Marquee
 
-Marquee is a personal Android TV / Fire TV IPTV client built with Kotlin and Jetpack Media3. It targets the Xtream Codes API and is designed around a warm, cinema-style 10-foot UI rather than a generic blue media grid.
+Marquee is a personal Android TV / Fire TV IPTV client built with Kotlin and Jetpack Media3. It targets the Xtream Codes API and is designed around a cinematic 10-foot UI rather than a generic blue media grid.
 
 > Unofficial personal project. Not affiliated with any IPTV provider.
 
 ## Features
 
-- **Marquee UI** — warm black/amber palette, condensed display type, artwork-first cards, and a focus ring drawn over the artwork.
+- **Marquee UI** — near-black navy, bone type, amber focus, a full-bleed billboard, artwork-first rails, and the "House Lights Down" design system from the native redesign.
 - **Xtream login** — provider URL, username, and password entered once and stored in private app preferences.
-- **Home rails** — featured movies, live TV, movies, and series.
-- **Browse** — live channels in a 4-column grid; movies and series in a 6-column 2:3 poster grid.
-- **Series detail** — backdrop, metadata, seasons, episode cards, and playback.
+- **Home** — cinematic billboard with Play, My List and Details; Continue Watching, Live Now, For You, Because You Watched, Top 10, New Releases and My List rails.
+- **Continue Watching** — per-profile playback history with resume positions, recorded by `HistoryStore`.
+- **Recommendations** — an on-device hybrid baseline: category affinity from history and favorites, stable novelty, and a two-per-category diversity cap. Surfaced as For You, Because You Watched and Top 10.
+- **Browse** — live channels in a 4-column grid; movies and series in a 6-column 2:3 poster grid, with shared Marquee navigation.
+- **Detail** — cinematic movie page with backdrop, metadata, plot, Play/Resume, My List and More Like This.
+- **Series detail** — backdrop, metadata, seasons, episode cards, and playback; episode progress feeds Continue Watching.
 - **Search** — local search across the loaded live, VOD, and series catalogs.
-- **Profiles** — a `Who's watching?` picker with one shared provider login. Each profile has its own favorites.
-- **Favorites** — long-press **OK** on any card to add/remove it; favorites get a `★` prefix and appear in the **FAVORITES** tab.
+- **Profiles** — a `Who's watching?` picker with one shared provider login. Each profile keeps its own My List, playback history and recommendations.
+- **My List** — long-press **OK** on any card to add/remove it; saved titles appear in the My List rail and tab.
 
-## Screenshots
+## Design
 
-| Home | Profiles | Favorites |
-|---|---|---|
-| ![Marquee Home](docs/home.png) | ![Who's watching?](docs/profiles.png) | ![Favorites](docs/favorites.png) |
+The native 1.3 UI follows the “House Lights Down” system: deep navy ground, bone type, amber focus, a cinematic billboard, horizontal rails, a remote-first search keypad, and a redesigned profile picker.
 
-The design concept is in [`firetv-player/design/redesign.html`](firetv-player/design/redesign.html). The Claude Design brief used to push the UI toward a Netflix-caliber experience, including live TV and the recommendations engine, is in [`docs/design-prompt.md`](docs/design-prompt.md).
+The original Claude Design brief is in [`docs/design-prompt.md`](docs/design-prompt.md). The responsive prototype is kept as a design reference at `docs/design/marquee-prototype.html`; it is not the Android runtime.
 
 ## Build
 
@@ -49,15 +50,17 @@ For a Fire TV, enable ADB debugging and install with:
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Profiles and favorites
+## Profiles, history and recommendations
 
-Profiles are device-local. They share the provider login and only isolate favorites:
+Profiles are device-local. They share the provider login and isolate the personalized state:
 
 - `ProfileStore` stores profiles and the active profile in `profiles` preferences.
-- `FavoriteStore` stores each profile's list under `items_<profileId>`.
-- The profile chip in the Home top bar opens the picker.
-- Long-press **OK** on a Home/Browse/Search card toggles a favorite.
-- Long-press a Favorites row to remove it.
+- `FavoriteStore` stores each profile's My List under `items_<profileId>`.
+- `HistoryStore` stores each profile's playback history and resume position under `history_<profileId>`.
+- `Recommendations` blends each profile's category affinity with stable novelty and a diversity cap. It runs locally; no viewing data leaves the device.
+- The profile chip in the top bar opens the picker.
+- Long-press **OK** on a Home/Browse/Search card toggles My List.
+- Long-press a My List row to remove it.
 
 If you need separate provider credentials per profile, that is a different authentication model and is not implemented here.
 

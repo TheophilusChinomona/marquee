@@ -5,6 +5,11 @@
     android:background="@color/bg"
     android:orientation="vertical">
 
+    <FrameLayout
+        android:id="@+id/navHost"
+        android:layout_width="match_parent"
+        android:layout_height="80dp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="80dp"

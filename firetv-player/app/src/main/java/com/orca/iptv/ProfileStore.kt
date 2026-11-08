@@ -89,6 +89,7 @@ object ProfileStore {
             prefs(context).edit().putString(KEY_ACTIVE, list.first().id).apply()
         }
         FavoriteStore.clear(context, id)
+        HistoryStore.clear(context, id)
         save(context, list)
         return true
     }

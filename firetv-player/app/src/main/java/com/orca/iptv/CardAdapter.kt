@@ -171,6 +171,14 @@ class SearchResultAdapter(
             else -> "SERIES"
         }
         ImageLoader.load(result.item.icon, holder.image)
+        holder.itemView.setOnFocusChangeListener { v, hasFocus ->
+            v.animate()
+                .scaleX(if (hasFocus) 1.02f else 1f)
+                .scaleY(if (hasFocus) 1.02f else 1f)
+                .setDuration(140L)
+                .start()
+            v.translationZ = if (hasFocus) 8f else 0f
+        }
         holder.itemView.setOnClickListener { onClick(result) }
         if (onLongClick != null) {
             holder.itemView.setOnLongClickListener {

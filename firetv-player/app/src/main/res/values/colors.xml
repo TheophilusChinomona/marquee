@@ -1,12 +1,12 @@
 <resources>
-    <color name="bg">#0E0D0B</color>
-    <color name="panel">#16130E</color>
-    <color name="text">#F6F1E7</color>
-    <color name="text_dim">#C9BFB0</color>
-    <color name="accent">#F2B441</color>
-    <color name="accent_light">#FFD98A</color>
-    <color name="focused">#F2B441</color>
-    <color name="focused_text">#161006</color>
-    <color name="card">#1B1712</color>
-    <color name="card_border">#332C22</color>
+    <color name="bg">#0A0E13</color>
+    <color name="panel">#121820</color>
+    <color name="text">#F4F1EA</color>
+    <color name="text_dim">#BAC3D0</color>
+    <color name="accent">#FFD23F</color>
+    <color name="accent_light">#FFE58A</color>
+    <color name="focused">#FFD23F</color>
+    <color name="focused_text">#0A0E13</color>
+    <color name="card">#1B2430</color>
+    <color name="card_border">#283345</color>
 </resources>

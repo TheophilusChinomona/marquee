@@ -61,6 +61,14 @@ class StreamAdapter(
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val item = items[position]
         holder.bind(item, live, isFavorite(item), onClick)
+        holder.itemView.setOnFocusChangeListener { v, hasFocus ->
+            v.animate()
+                .scaleX(if (hasFocus) 1.06f else 1f)
+                .scaleY(if (hasFocus) 1.06f else 1f)
+                .setDuration(if (hasFocus) 160L else 140L)
+                .start()
+            v.translationZ = if (hasFocus) 12f else 0f
+        }
         if (onLongClick != null) {
             holder.itemView.setOnLongClickListener {
                 val pos = holder.bindingAdapterPosition

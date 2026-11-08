@@ -5,6 +5,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -52,6 +53,21 @@ class BrowseActivity : AppCompatActivity() {
         streamsView = findViewById(R.id.streams)
         progress = findViewById(R.id.progress)
         status = findViewById(R.id.status)
+
+        val activeTab = when (mode) {
+            MODE_LIVE -> "live"
+            MODE_VOD -> "movies"
+            else -> "series"
+        }
+        findViewById<FrameLayout>(R.id.navHost).addView(
+            MarqueeNav(this, activeTab) { tab ->
+                if (tab != activeTab) MarqueeNav.navigate(this, tab)
+            },
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                (80 * resources.displayMetrics.density).toInt()
+            )
+        )
 
         categoriesView.layoutManager = LinearLayoutManager(this)
         configureGrid()
@@ -207,7 +223,15 @@ class BrowseActivity : AppCompatActivity() {
                 PlayerActivity.intent(this, client.liveUrl(stream.id), stream.name)
             )
             MODE_VOD -> startActivity(
-                PlayerActivity.intent(this, client.vodUrl(stream.id, stream.ext), stream.name)
+                PlayerActivity.intent(
+                    this,
+                    client.vodUrl(stream.id, stream.ext),
+                    stream.name,
+                    stream.id,
+                    MODE_VOD,
+                    stream.icon,
+                    ""
+                )
             )
             else -> startActivity(SeriesActivity.intent(this, stream.id, stream.name))
         }

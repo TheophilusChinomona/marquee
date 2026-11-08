@@ -29,6 +29,17 @@ class XtreamClient(server: String, private val user: String, private val pass: S
         val episodes: List<EpisodeDetails>
     )
 
+    data class MovieDetails(
+        val name: String,
+        val backdrop: String,
+        val poster: String,
+        val plot: String,
+        val genre: String,
+        val releaseDate: String,
+        val rating: String,
+        val durationMinutes: Int
+    )
+
     data class SeriesDetails(
         val name: String,
         val backdrop: String,
@@ -155,6 +166,31 @@ class XtreamClient(server: String, private val user: String, private val pass: S
             rating = info.opt("rating")?.toString().orEmpty(),
             runtimeMinutes = info.optInt("episode_run_time"),
             seasons = seasons
+        )
+    }
+
+    fun movieDetails(vodId: String): MovieDetails {
+        val url = "$base/player_api.php?$auth&action=get_vod_info&vod_id=${enc(vodId)}"
+        val root = JSONObject(fetch(url))
+        val info = root.optJSONObject("info") ?: JSONObject()
+        val backdrop = when (val raw = info.opt("backdrop_path")) {
+            is JSONArray -> if (raw.length() > 0) raw.optString(0) else ""
+            is String -> raw
+            else -> ""
+        }.ifBlank {
+            root.optJSONObject("movie_data")?.optString("stream_icon").orEmpty()
+        }.ifBlank { info.optString("movie_image") }
+        val duration = info.optInt("duration_secs", 0)
+        return MovieDetails(
+            name = info.optString("name"),
+            backdrop = backdrop,
+            poster = info.optString("movie_image"),
+            plot = info.optString("plot").ifBlank { info.optString("description") },
+            genre = info.optString("genre"),
+            releaseDate = info.optString("releasedate")
+                .ifBlank { info.optString("release_date") },
+            rating = info.opt("rating")?.toString().orEmpty(),
+            durationMinutes = if (duration > 0) duration / 60 else info.optInt("duration", 0)
         )
     }
 

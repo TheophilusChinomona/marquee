@@ -49,6 +49,11 @@
             android:exported="false" />
 
         <activity
+            android:name=".DetailActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:exported="false" />
+
+        <activity
             android:name=".SearchActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="false" />

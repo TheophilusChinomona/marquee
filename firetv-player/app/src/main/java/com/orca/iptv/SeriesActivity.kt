@@ -34,6 +34,7 @@ class SeriesActivity : AppCompatActivity() {
     private var details: XtreamClient.SeriesDetails? = null
     private var selectedSeason = 0
     private var fallbackName = ""
+    private var seriesId = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,14 +42,24 @@ class SeriesActivity : AppCompatActivity() {
             finish()
             return
         }
-        val seriesId = intent.getStringExtra(EXTRA_ID) ?: run {
+        val incomingSeriesId = intent.getStringExtra(EXTRA_ID) ?: run {
             finish()
             return
         }
+        seriesId = incomingSeriesId
         fallbackName = intent.getStringExtra(EXTRA_NAME).orEmpty()
         client = XtreamClient(creds.server, creds.user, creds.pass)
 
         setContentView(R.layout.activity_series)
+        findViewById<android.widget.FrameLayout>(R.id.navHost).addView(
+            MarqueeNav(this, "series") { tab ->
+                if (tab != "series") MarqueeNav.navigate(this, tab)
+            },
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                (80 * resources.displayMetrics.density).toInt()
+            )
+        )
         titleView = findViewById(R.id.title)
         metaView = findViewById(R.id.meta)
         plotView = findViewById(R.id.plot)
@@ -179,11 +190,20 @@ class SeriesActivity : AppCompatActivity() {
     }
 
     private fun playEpisode(episode: XtreamClient.EpisodeDetails) {
+        val data = details
+        val category = Catalog.find(MODE_SERIES, seriesId)?.categoryId.orEmpty()
         startActivity(
             PlayerActivity.intent(
                 this,
                 client.seriesUrl(episode.id, episode.ext),
-                cleanTitle(episode)
+                data?.name?.takeIf { it.isNotBlank() } ?: fallbackName.ifBlank { "Series" },
+                id = seriesId,
+                mode = MODE_SERIES,
+                icon = data?.poster.orEmpty(),
+                categoryId = category,
+                ext = episode.ext,
+                seriesId = seriesId,
+                episode = cleanTitle(episode)
             )
         )
     }

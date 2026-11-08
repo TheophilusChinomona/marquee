@@ -26,6 +26,19 @@ object Catalog {
         return value.trim().replace(Regex("""\s{2,}"""), " ")
     }
 
+    fun allVod(): List<Item> = vodSections.flatMap { it.items }
+
+    fun allSeries(): List<Item> = seriesSections.flatMap { it.items }
+
+    fun find(mode: Int, id: String): Item? = when (mode) {
+        MODE_LIVE -> liveSections.asSequence().flatMap { it.items.asSequence() }
+            .firstOrNull { it.id == id }
+        MODE_SERIES -> seriesSections.asSequence().flatMap { it.items.asSequence() }
+            .firstOrNull { it.id == id }
+        else -> vodSections.asSequence().flatMap { it.items.asSequence() }
+            .firstOrNull { it.id == id }
+    }
+
     data class Section(
         val id: String,
         val name: String,

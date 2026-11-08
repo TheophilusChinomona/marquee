@@ -21,7 +21,7 @@ Marquee is a personal Android TV / Fire TV IPTV client built with Kotlin and Jet
 |---|---|---|
 | ![Marquee Home](docs/home.png) | ![Who's watching?](docs/profiles.png) | ![Favorites](docs/favorites.png) |
 
-The design concept is in [`firetv-player/design/redesign.html`](firetv-player/design/redesign.html).
+The design concept is in [`firetv-player/design/redesign.html`](firetv-player/design/redesign.html). The Claude Design brief used to push the UI toward a Netflix-caliber experience, including live TV and the recommendations engine, is in [`docs/design-prompt.md`](docs/design-prompt.md).
 
 ## Build
 

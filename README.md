@@ -45,20 +45,27 @@ The result is a small, opinionated client that treats a Fire TV Stick like a cin
 
 ## Install
 
-### Download
+### Direct download
 
-Grab the latest signed APK from the [Releases page](https://github.com/TheophilusChinomona/marquee/releases/latest).
+**[Download the latest APK](https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk)**
 
-### Fire TV / Fire OS
+That link always points at the newest signed release.
 
-1. On the Fire TV: **Settings → My Fire TV → Developer Options → ADB Debugging → On** (enable Developer Options first by selecting **About → Device Name** seven times if needed).
-2. Install the APK using one of these:
-   - **Downloader app**: install Downloader from the Amazon Appstore, allow apps from unknown sources, and enter the APK URL from the release page.
-   - **ADB over the network**:
-     ```bash
-     adb connect <fire-tv-ip>:5555
-     adb install -r Marquee-1.4.apk
-     ```
+### Fire TV / Fire OS (no ADB)
+
+1. Install **Downloader** from the Amazon Appstore.
+2. Enable installs for Downloader: **Settings → My Fire TV → Developer Options → Install unknown apps → Downloader → On**. (On older Fire OS: **Settings → Device & Software → Developer Options**.)
+3. Open **Downloader**, select the URL field, enter the download link above, and choose **Go**.
+4. When the download finishes, choose **Install**, then open **Marquee** from **Your Apps & Channels**.
+
+### Fire TV via ADB (optional)
+
+1. **Settings → My Fire TV → Developer Options → ADB Debugging → On** (enable Developer Options first by selecting **About → Device Name** seven times if needed).
+2. Install over the network:
+   ```bash
+   adb connect <fire-tv-ip>:5555
+   adb install -r Marquee.apk
+   ```
 3. Launch **Marquee** from **Your Apps & Channels**.
 
 ### Android TV
@@ -66,7 +73,7 @@ Grab the latest signed APK from the [Releases page](https://github.com/Theophilu
 The same APK works on Android TV / Google TV devices (Android 5.0+):
 
 ```bash
-adb install -r Marquee-1.4.apk
+adb install -r Marquee.apk
 ```
 
 ## First run

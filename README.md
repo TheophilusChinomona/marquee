@@ -32,6 +32,17 @@ The result is a small, opinionated client that treats a Fire TV Stick like a cin
 - **Search** — local search across the loaded live, VOD, and series catalogues.
 - **Recommendations** — a small on-device hybrid of category affinity, stable novelty, and a diversity cap. Nothing leaves the device.
 
+## Screenshots
+
+![Home](screenshots/home.png)
+*Home — cinematic billboard and artwork rails.*
+
+![Series](screenshots/series.png)
+*Series — season dropdown, horizontal episode rail and Resume.*
+
+![My List](screenshots/my-list.png)
+*My List — every saved title in one place.*
+
 ## Install
 
 ### Download
@@ -150,6 +161,14 @@ The bundled JSON catalogues in `assets/` make the Home rails work offline and ke
 
 - Built with [Jetpack Media3 / ExoPlayer](https://developer.android.com/media/media3).
 - Design direction: "House Lights Down", later reworked into a Netflix-inspired 10-foot system.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTIONS.md](CONTRIBUTIONS.md) for setup, style and pull request guidelines. The `master` branch is protected, so please open a pull request instead of pushing directly.
+
+## License
+
+[MIT](LICENSE) © 2026 Theophilus Chinomona
 
 ## Disclaimer
 

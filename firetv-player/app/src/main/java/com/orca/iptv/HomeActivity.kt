@@ -43,6 +43,7 @@ class HomeActivity : AppCompatActivity() {
         requestedTab = intent.getStringExtra(EXTRA_TAB)
         buildUi()
         loadCatalog()
+        UpdatePrompt.showIfAvailable(this, scope)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -55,6 +56,7 @@ class HomeActivity : AppCompatActivity() {
         super.onResume()
         if (::nav.isInitialized) nav.refreshProfile()
         if (catalogReady) render()
+        UpdatePrompt.refocus()
     }
 
     private fun buildUi() {

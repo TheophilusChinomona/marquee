@@ -142,11 +142,14 @@ class ProfilesActivity : AppCompatActivity() {
         ).apply { topMargin = dp(14) })
 
         if (active) {
-            val now = MarqueeUi.text(this, "● Watching now", 14f, MarqueeUi.BULB, MarqueeUi.body())
-            now.gravity = Gravity.CENTER
+            val now = MarqueeUi.text(this, "● Watching now", 14f, MarqueeUi.BULB, MarqueeUi.body()).apply {
+                // includeFontPadding = false in MarqueeUi.text clips the descender of "g".
+                includeFontPadding = true
+                gravity = Gravity.CENTER
+            }
             card.addView(now, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
+                dp(22)
             ).apply { topMargin = dp(4) })
         }
 

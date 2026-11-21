@@ -627,7 +627,8 @@ class LiveGuideActivity : AppCompatActivity() {
                 0xFF1A1A1A.toInt(),
                 6,
                 2,
-                MarqueeUi.INK
+                MarqueeUi.INK,
+                strokeOnNormal = false
             )
             setOnFocusChangeListener { v, _ -> MarqueeUi.scaleOnFocus(v, 1.02f) }
         }

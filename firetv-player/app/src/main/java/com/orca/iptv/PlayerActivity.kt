@@ -71,7 +71,10 @@ class PlayerActivity : AppCompatActivity() {
             finish()
             return
         }
-        title = intent.getStringExtra(EXTRA_NAME)
+        // Strip provider decorations ("[MULTI-SUB]", "- 2025") so the overlay
+        // and the watch history show the title the rails already show.
+        val rawName = intent.getStringExtra(EXTRA_NAME).orEmpty()
+        title = Catalog.displayName(rawName).ifBlank { rawName }
         itemId = intent.getStringExtra(EXTRA_ID).orEmpty()
         itemMode = intent.getIntExtra(EXTRA_MODE, -1)
         itemIcon = intent.getStringExtra(EXTRA_ICON).orEmpty()

@@ -9,3 +9,7 @@ goose-*.tar.bz2
 *.jks
 *.apk
 .DS_Store
+
+# Local, never committed
+PORTFOLIO-BRIEF.md
+screenshots.zip

@@ -73,13 +73,17 @@ object MarqueeUi {
         focusedFill: Int,
         radiusDp: Int,
         strokeDp: Int = 0,
-        stroke: Int = Color.TRANSPARENT
+        stroke: Int = Color.TRANSPARENT,
+        strokeOnNormal: Boolean = true
     ): StateListDrawable = StateListDrawable().apply {
         addState(
             intArrayOf(android.R.attr.state_focused),
             fill(context, focusedFill, radiusDp, strokeDp, stroke)
         )
-        addState(intArrayOf(), fill(context, normalFill, radiusDp, strokeDp, stroke))
+        addState(
+            intArrayOf(),
+            fill(context, normalFill, radiusDp, if (strokeOnNormal) strokeDp else 0, stroke)
+        )
     }
 
     fun textColors(normal: Int, focused: Int, selected: Int = normal): ColorStateList =

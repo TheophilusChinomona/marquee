@@ -30,6 +30,7 @@ The result is a small, opinionated client that treats a Fire TV Stick like a cin
 - **Profiles** — a "Who's watching?" picker with one shared provider login. Each profile keeps its own My List, history, and recommendations.
 - **My List** — a dedicated grid screen; long-press OK on any card to add or remove a title.
 - **Search** — local search across the loaded live, VOD, and series catalogues.
+- **In-app updates** — checks `version.json` on launch, downloads the new APK and hands it to the system installer.
 - **Recommendations** — a small on-device hybrid of category affinity, stable novelty, and a diversity cap. Nothing leaves the device.
 
 ## Screenshots
@@ -155,6 +156,19 @@ The bundled JSON catalogues in `assets/` make the Home rails work offline and ke
 - There is no analytics, tracking, or telemetry.
 - Live EPG and artwork are fetched from your provider and the URLs it returns.
 - Provider credentials are entered at runtime and stored on the device only.
+- On launch the app makes one request to this repository, for `version.json`, to see whether a newer build exists. It sends no identifiers and nothing about your usage; if the file is unreachable the check is skipped silently. See *Updates* below.
+
+## Updates
+
+Marquee can update itself from this repository's releases. On launch it fetches
+[`version.json`](version.json), compares `versionCode` with the installed build, and only
+then offers the download. The APK is saved to the app cache, checked against `sha256` when
+one is published, and handed to the Android TV installer — which always asks for
+confirmation. Nothing installs silently.
+
+On Fire OS, allow it once: **Settings → My TV → Developer Options → Install unknown apps →
+Marquee → On**. An update must be signed with the same key as the installed build,
+otherwise Android rejects it.
 
 ## Known limitations
 
@@ -168,6 +182,8 @@ The bundled JSON catalogues in `assets/` make the Home rails work offline and ke
 
 - Built with [Jetpack Media3 / ExoPlayer](https://developer.android.com/media/media3).
 - Design direction: "House Lights Down", later reworked into a Netflix-inspired 10-foot system.
+- Identity: the MARQUEE wordmark — condensed caps, white on pure black, with a single red rule
+  that the Q's descender cuts through (`mipmap-*/ic_launcher.png`, `banner.png`).
 
 ## Contributing
 

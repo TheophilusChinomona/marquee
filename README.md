@@ -127,9 +127,6 @@ firetv-player/
     res/                     Themes, layouts, drawables, launcher icons
     assets/                  Bundled catalog metadata (no credentials)
   tools/                     Catalog and allowlist helper scripts
-docs/
-  design-prompt.md           Original design brief
-  design/                    Design reference prototype
 ```
 
 The bundled JSON catalogues in `assets/` make the Home rails work offline and keep the app fast. They contain provider/catalog metadata and artwork URLs only. To build them for your own provider, see `firetv-player/tools/build_catalog.py` (it reads provider credentials from `.env`, which is git-ignored).

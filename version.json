@@ -1,7 +1,7 @@
 {
-  "versionCode": 5,
-  "versionName": "1.4",
+  "versionCode": 6,
+  "versionName": "1.5",
   "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk",
-  "sha256": "",
-  "notes": "Marquee 1.4: Netflix-style UI, full live guide, resume and My List."
+  "sha256": "502e960cedf4d6ad4cc4af71b819369893b1bc85cd5b9268293dccc68809c5bd",
+  "notes": "Marquee 1.5: in-app updates, new wordmark identity, series resume fix."
 }

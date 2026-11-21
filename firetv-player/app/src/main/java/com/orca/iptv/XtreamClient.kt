@@ -272,11 +272,23 @@ class XtreamClient(server: String, private val user: String, private val pass: S
             conn.setRequestProperty("Accept", "application/json")
             val code = conn.responseCode
             if (code !in 200..299) throw IOException("HTTP $code")
-            return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }.trim()
+            val bytes = conn.inputStream.use { it.readBytes() }
+            return decode(bytes).trim()
         } finally {
             conn.disconnect()
         }
     }
 
     private fun enc(value: String) = URLEncoder.encode(value, "UTF-8")
+
+    /**
+     * Some providers send Windows-1252 bytes under a UTF-8 content type, which turns
+     * accented category names into "DOCUMENT?RIOS". Decode as UTF-8 and fall back only
+     * when that produced replacement characters.
+     */
+    private fun decode(bytes: ByteArray): String {
+        val utf8 = String(bytes, Charsets.UTF_8)
+        if (!utf8.contains('�')) return utf8
+        return runCatching { String(bytes, charset("windows-1252")) }.getOrDefault(utf8)
+    }
 }

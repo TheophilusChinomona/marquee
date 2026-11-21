@@ -571,6 +571,7 @@ class SeriesActivity : AppCompatActivity() {
                 seriesId = seriesId,
                 episode = cleanTitle(episode),
                 episodeId = episode.id,
+                queueJson = queueAfter(episode),
                 startPositionMs = position
             )
         )
@@ -583,6 +584,34 @@ class SeriesActivity : AppCompatActivity() {
             episode.title
         }
         return value.ifBlank { "Episode ${episode.number}" }
+    }
+
+
+    /**
+     * Everything after this episode, in season order, so the player can roll on
+     * without sending the viewer back to the rail. URLs are resolved here because
+     * the player has no provider client.
+     */
+    private fun queueAfter(episode: XtreamClient.EpisodeDetails): String {
+        val data = details ?: return ""
+        val flat = data.seasons.flatMap { it.episodes }
+        val index = flat.indexOfFirst { it.id == episode.id }
+        if (index < 0) return ""
+        val rest = flat.drop(index + 1)
+        if (rest.isEmpty()) return ""
+
+        val array = org.json.JSONArray()
+        rest.forEach { next ->
+            array.put(
+                org.json.JSONObject()
+                    .put("id", next.id)
+                    .put("url", client.seriesUrl(next.id, next.ext))
+                    .put("title", cleanTitle(next))
+                    .put("season", next.season)
+                    .put("number", next.number)
+            )
+        }
+        return array.toString()
     }
 
     private fun episodeMeta(episode: XtreamClient.EpisodeDetails): String {

@@ -37,6 +37,8 @@ class PlayerActivity : AppCompatActivity() {
     private var seriesId = ""
     private var episodeLabel = ""
     private var episodeId = ""
+    private val queue = ArrayList<QueuedEpisode>()
+    private var advancing = false
     private var startPositionMs = 0L
     private var isLive = false
 
@@ -84,6 +86,7 @@ class PlayerActivity : AppCompatActivity() {
         seriesId = intent.getStringExtra(EXTRA_SERIES_ID).orEmpty()
         episodeLabel = intent.getStringExtra(EXTRA_EPISODE).orEmpty()
         episodeId = intent.getStringExtra(EXTRA_EPISODE_ID).orEmpty()
+        queue.addAll(QueuedEpisode.parse(intent.getStringExtra(EXTRA_QUEUE)))
         startPositionMs = intent.getLongExtra(EXTRA_START, 0L)
         isLive = itemMode == MODE_LIVE || url.contains("/live/")
 
@@ -104,6 +107,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 updateProgress()
+                if (playbackState == Player.STATE_ENDED) advanceToNext()
             }
         })
         play(url)
@@ -212,6 +216,21 @@ class PlayerActivity : AppCompatActivity() {
                 }
             })
         }
+        val upNext = MarqueeUi.text(
+            this,
+            queue.firstOrNull()?.let { "Up next · ${it.title}" }.orEmpty(),
+            14f,
+            MarqueeUi.SAND,
+            MarqueeUi.body()
+        ).apply {
+            visibility = if (queue.isEmpty()) View.GONE else View.VISIBLE
+            setPadding(0, dp(6), 0, dp(4))
+        }
+        bottom.addView(upNext, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
         bottom.addView(seek, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             dp(34)
@@ -254,6 +273,34 @@ class PlayerActivity : AppCompatActivity() {
             playWhenReady = true
         }
         updatePlayPause()
+    }
+
+    /**
+     * Continue with the next episode in the queue instead of dropping the viewer back
+     * on the series page. A fresh activity keeps the player code single-episode.
+     */
+    private fun advanceToNext() {
+        if (advancing || queue.isEmpty()) return
+        advancing = true
+        val next = queue.removeAt(0)
+        saveProgress()
+        startActivity(
+            intent(
+                this,
+                next.url,
+                title?.toString().orEmpty(),
+                id = itemId,
+                mode = itemMode,
+                icon = itemIcon,
+                categoryId = itemCategory,
+                ext = itemExt,
+                seriesId = seriesId,
+                episode = next.title,
+                episodeId = next.id,
+                queueJson = QueuedEpisode.toJson(queue)
+            )
+        )
+        finish()
     }
 
     private fun togglePlay() {
@@ -372,6 +419,55 @@ class PlayerActivity : AppCompatActivity() {
         Toast.makeText(this, "Playback failed: ${error.errorCodeName}", Toast.LENGTH_LONG).show()
     }
 
+    /** One upcoming episode: the player only needs a ready URL and a label. */
+    data class QueuedEpisode(
+        val id: String,
+        val url: String,
+        val title: String,
+        val season: Int,
+        val number: Int
+    ) {
+        companion object {
+            fun parse(raw: String?): List<QueuedEpisode> {
+                if (raw.isNullOrBlank()) return emptyList()
+                val out = ArrayList<QueuedEpisode>()
+                runCatching {
+                    val array = org.json.JSONArray(raw)
+                    for (i in 0 until array.length()) {
+                        val o = array.optJSONObject(i) ?: continue
+                        val url = o.optString("url")
+                        if (url.isBlank()) continue
+                        out.add(
+                            QueuedEpisode(
+                                id = o.optString("id"),
+                                url = url,
+                                title = o.optString("title"),
+                                season = o.optInt("season"),
+                                number = o.optInt("number")
+                            )
+                        )
+                    }
+                }
+                return out
+            }
+
+            fun toJson(items: List<QueuedEpisode>): String {
+                val array = org.json.JSONArray()
+                items.forEach { item ->
+                    array.put(
+                        org.json.JSONObject()
+                            .put("id", item.id)
+                            .put("url", item.url)
+                            .put("title", item.title)
+                            .put("season", item.season)
+                            .put("number", item.number)
+                    )
+                }
+                return array.toString()
+            }
+        }
+    }
+
     private fun formatTime(ms: Long): String {
         val total = (ms / 1000L).coerceAtLeast(0L)
         val hours = total / 3600L
@@ -434,6 +530,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_SERIES_ID = "series_id"
         private const val EXTRA_EPISODE = "episode"
         private const val EXTRA_EPISODE_ID = "episode_id"
+        private const val EXTRA_QUEUE = "next_queue"
         private const val EXTRA_START = "start_position"
 
         fun intent(
@@ -448,6 +545,7 @@ class PlayerActivity : AppCompatActivity() {
             seriesId: String = "",
             episode: String = "",
             episodeId: String = "",
+            queueJson: String = "",
             startPositionMs: Long = 0L
         ): Intent =
             Intent(context, PlayerActivity::class.java)
@@ -461,6 +559,7 @@ class PlayerActivity : AppCompatActivity() {
                 .putExtra(EXTRA_SERIES_ID, seriesId)
                 .putExtra(EXTRA_EPISODE, episode)
                 .putExtra(EXTRA_EPISODE_ID, episodeId)
+                .putExtra(EXTRA_QUEUE, queueJson)
                 .putExtra(EXTRA_START, startPositionMs)
     }
 }

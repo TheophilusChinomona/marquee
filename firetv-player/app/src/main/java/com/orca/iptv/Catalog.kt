@@ -13,17 +13,20 @@ object Catalog {
         val ext: String
     )
 
+    // Compiled once: displayName runs over ~48k titles when a search is built.
+    private val QUALITY_TAG = Regex(
+        """\s*\[(MULTI-SUB|MULTI-LANG|MULTI-AUDIO|4K|FHD|HD|SD)\]\s*""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TRAILING_YEAR = Regex("""\s+-\s+\d{4}\s*$""")
+    private val LANGUAGE_PREFIX = Regex("""^[A-Z]{2,3}\|\s*""")
+    private val DOUBLE_SPACE = Regex("""\s{2,}""")
+
     fun displayName(raw: String): String {
-        var value = raw.replace(
-            Regex(
-                """\s*\[(MULTI-SUB|MULTI-LANG|MULTI-AUDIO|4K|FHD|HD|SD)\]\s*""",
-                RegexOption.IGNORE_CASE
-            ),
-            " "
-        )
-        value = value.replace(Regex("""\s+-\s+\d{4}\s*$"""), "")
-        value = value.replace(Regex("""^[A-Z]{2,3}\|\s*"""), "")
-        return value.trim().replace(Regex("""\s{2,}"""), " ")
+        var value = raw.replace(QUALITY_TAG, " ")
+        value = value.replace(TRAILING_YEAR, "")
+        value = value.replace(LANGUAGE_PREFIX, "")
+        return value.trim().replace(DOUBLE_SPACE, " ")
     }
 
     fun allVod(): List<Item> = vodSections.flatMap { it.items }

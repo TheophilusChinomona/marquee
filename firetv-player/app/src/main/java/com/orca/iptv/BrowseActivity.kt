@@ -3,9 +3,11 @@ package com.orca.iptv
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -27,6 +29,10 @@ class BrowseActivity : AppCompatActivity() {
     private var pendingCategoryId: String? = null
 
     private lateinit var categoriesView: RecyclerView
+    private lateinit var chipRow: LinearLayout
+    private var allCategories: List<XtreamClient.Category> = emptyList()
+    private var selectedChip: String? = null
+    private val chipViews = ArrayList<Pair<String?, TextView>>()
     private lateinit var streamsView: RecyclerView
     private lateinit var progress: View
     private lateinit var status: TextView
@@ -46,6 +52,7 @@ class BrowseActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_browse)
         categoriesView = findViewById(R.id.categories)
+        chipRow = findViewById(R.id.chipRow)
         streamsView = findViewById(R.id.streams)
         progress = findViewById(R.id.progress)
         status = findViewById(R.id.status)
@@ -152,14 +159,80 @@ class BrowseActivity : AppCompatActivity() {
             }
             val list = result.getOrDefault(emptyList())
             android.util.Log.i("FireIPTV", "categories mode=$mode count=${list.size}")
-            categoryAdapter.submit(list)
-            val target = list.firstOrNull { it.id == pendingCategoryId } ?: list.firstOrNull()
+            allCategories = list
+            rebuildChips()
+            val target = list.firstOrNull { it.id == pendingCategoryId }
             pendingCategoryId = null
-            if (target != null) {
-                loadStreams(target)
-            } else {
-                status.text = getString(R.string.no_streams)
+            applyChip(null, target)
+        }
+    }
+
+
+    /**
+     * Language chips: `[EN] NETFLIX`, `AF | DSTV SPORT` and `VIP | FIFA PLUS` all
+     * belong to different audiences, so pick the audience first and the list becomes
+     * short enough to read.
+     */
+    private fun rebuildChips() {
+        chipRow.removeAllViews()
+        chipViews.clear()
+
+        val chips = LinkedHashSet<String>()
+        allCategories.forEach { chips.add(CategoryNames.parse(it.name).chip) }
+        val ordered = chips.sortedBy { CategoryNames.sortKey(it) }
+
+        (listOf<String?>(null) + ordered).forEach { chip ->
+            val view = MarqueeUi.text(
+                this,
+                chip ?: CategoryLabel.ALL,
+                14f,
+                MarqueeUi.SAND,
+                MarqueeUi.medium()
+            ).apply {
+                gravity = Gravity.CENTER
+                isFocusable = true
+                isFocusableInTouchMode = true
+                setPadding(MarqueeUi.dp(this@BrowseActivity, 14), 0, MarqueeUi.dp(this@BrowseActivity, 14), 0)
+                background = MarqueeUi.focusSelector(this@BrowseActivity, 0x00000000, MarqueeUi.INK, 20)
+                setTextColor(MarqueeUi.textColors(MarqueeUi.SAND, MarqueeUi.GROUND))
+                setOnFocusChangeListener { v, _ -> MarqueeUi.scaleOnFocus(v, 1.04f) }
+                setOnClickListener { applyChip(chip) }
             }
+            chipRow.addView(view, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            ).apply { marginEnd = MarqueeUi.dp(this@BrowseActivity, 6) })
+            chipViews.add(chip to view)
+        }
+        styleChips()
+    }
+
+    private fun styleChips() {
+        chipViews.forEach { (chip, view) ->
+            val active = chip == selectedChip
+            view.setTextColor(
+                if (active) MarqueeUi.INK else MarqueeUi.SAND
+            )
+            view.setTypeface(if (active) MarqueeUi.medium() else MarqueeUi.body())
+        }
+    }
+
+    private fun applyChip(chip: String?, select: XtreamClient.Category? = null) {
+        selectedChip = chip
+        categoryAdapter.setChipFilter(chip)
+        val visible = if (chip == null) {
+            allCategories
+        } else {
+            allCategories.filter { CategoryNames.parse(it.name).chip == chip }
+        }
+        categoryAdapter.submit(visible)
+        styleChips()
+        val target = select?.takeIf { wanted -> visible.any { it.id == wanted.id } }
+            ?: visible.firstOrNull()
+        if (target != null) {
+            loadStreams(target)
+        } else {
+            status.text = getString(R.string.no_streams)
         }
     }
 

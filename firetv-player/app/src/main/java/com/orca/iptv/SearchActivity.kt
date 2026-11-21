@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
@@ -28,19 +29,20 @@ class SearchActivity : AppCompatActivity() {
     private lateinit var resultsView: RecyclerView
     private lateinit var status: TextView
     private lateinit var progress: ProgressBar
-    private val adapter = SearchResultAdapter(
-        isFavorite = { result ->
-            FavoriteStore.isFavorite(
-                this,
-                ProfileStore.activeId(this),
-                result.item.id,
-                result.mode
-            )
-        },
+    private lateinit var recentRow: LinearLayout
+    private val adapter = SearchGridAdapter(
+        onClick = { result -> open(result) },
         onLongClick = { result -> toggleFavorite(result) }
-    ) { result -> open(result) }
+    )
+    private val gridColumns = 5
     private var query = ""
     private var catalogReady = false
+    private data class SearchHit(
+        val item: Catalog.Item,
+        val mode: Int,
+        val index: Int,
+        val length: Int
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,7 +83,7 @@ class SearchActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(48), dp(18), dp(36), dp(12))
         }
-        body.addView(left, LinearLayout.LayoutParams(dp(760), LinearLayout.LayoutParams.MATCH_PARENT))
+        body.addView(left, LinearLayout.LayoutParams(dp(520), LinearLayout.LayoutParams.MATCH_PARENT))
 
         queryView = MarqueeUi.text(this, "", 28f, MarqueeUi.DUST, MarqueeUi.body()).apply {
             background = MarqueeUi.fill(this@SearchActivity, MarqueeUi.VELVET, 10, 2, MarqueeUi.LINE2)
@@ -96,7 +98,7 @@ class SearchActivity : AppCompatActivity() {
             dp(64)
         ))
 
-        val hint = MarqueeUi.text(this, "Say it, or use the keypad", 16f, MarqueeUi.SAND, MarqueeUi.body())
+        val hint = MarqueeUi.text(this, "Type a title, genre or channel", 14f, MarqueeUi.SAND, MarqueeUi.body())
         left.addView(hint, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -119,11 +121,11 @@ class SearchActivity : AppCompatActivity() {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, 0)
         }
-        last.addView(key("Y"), keyParams(dp(64)))
-        last.addView(key("Z"), keyParams(dp(64)))
-        last.addView(key("Space"), keyParams(dp(180)))
-        last.addView(key("⌫"), keyParams(dp(76)))
-        last.addView(key("Clear"), keyParams(dp(92)))
+        last.addView(key("Y"), keyParams(dp(54)))
+        last.addView(key("Z"), keyParams(dp(54)))
+        last.addView(key("Space"), keyParams(dp(126)))
+        last.addView(key("⌫"), keyParams(dp(64)))
+        last.addView(key("Clear"), keyParams(dp(80)))
         keypad.addView(last)
 
         val right = LinearLayout(this).apply {
@@ -139,8 +141,22 @@ class SearchActivity : AppCompatActivity() {
         header = MarqueeUi.text(this, "Trending at home", 24f, MarqueeUi.INK, MarqueeUi.medium())
         right.addView(header)
 
+        recentRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            visibility = View.GONE
+        }
+        right.addView(recentRow, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(10) })
+
         resultsView = RecyclerView(this).apply {
-            layoutManager = LinearLayoutManager(this@SearchActivity)
+            val grid = GridLayoutManager(this@SearchActivity, gridColumns)
+            grid.spanSizeLookup = object : GridLayoutManager.SpanSizeLookup() {
+                override fun getSpanSize(position: Int): Int =
+                    if (this@SearchActivity.adapter.getItemViewType(position) == 0) gridColumns else 1
+            }
+            layoutManager = grid
             adapter = this@SearchActivity.adapter
             clipToPadding = false
             clipChildren = false
@@ -180,7 +196,7 @@ class SearchActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(6))
         }
         letters.forEach { char ->
-            row.addView(key(char.toString()), keyParams(dp(64)))
+            row.addView(key(char.toString()), keyParams(dp(54)))
         }
         parent.addView(row)
     }
@@ -240,35 +256,105 @@ class SearchActivity : AppCompatActivity() {
         if (text.isEmpty()) {
             header.text = "Trending at home"
             status.text = "Type to search live TV, movies and series"
+            renderRecents()
             val trending = Catalog.vodSections.flatMap { it.items }
-                .take(14)
-                .map { SearchResult(it, MODE_VOD) }
+                .take(gridColumns * 3)
+                .map { item ->
+                    val result = SearchResult(item, MODE_VOD)
+                    SearchRow.Item(result, isFavorite(result))
+                }
             adapter.submit(trending)
             return
         }
 
-        val results = filter(text)
+        recentRow.visibility = View.GONE
+        val sections = filter(text)
         header.text = "Results for “$text”"
-        status.text = if (results.isEmpty()) "No matches. Try another title or genre." else ""
-        adapter.submit(results)
+        val total = sections.sumOf { it.second.size }
+        status.text = when {
+            total == 0 -> "No matches. Try a shorter title, or a channel name."
+            else -> "$total ${if (total == 1) "result" else "results"}"
+        }
+        adapter.submit(
+            sections.flatMap { (title, results) ->
+                if (results.isEmpty()) {
+                    emptyList()
+                } else {
+                    listOf(SearchRow.Header(title, results.size)) +
+                        results.map { SearchRow.Item(it, isFavorite(it)) }
+                }
+            }
+        )
     }
 
-    private fun filter(text: String): List<SearchResult> {
-        val results = ArrayList<SearchResult>()
-        Catalog.liveItems.asSequence()
-            .filter { it.name.contains(text, ignoreCase = true) }
-            .take(40)
-            .forEach { results.add(SearchResult(it, MODE_LIVE)) }
-        Catalog.searchVodItems.asSequence()
-            .filter { it.name.contains(text, ignoreCase = true) }
-            .take(40)
-            .forEach { results.add(SearchResult(it, MODE_VOD)) }
-        Catalog.searchSeriesItems.asSequence()
-            .filter { it.name.contains(text, ignoreCase = true) }
-            .take(40)
-            .forEach { results.add(SearchResult(it, MODE_SERIES)) }
-        return results
+    private fun isFavorite(result: SearchResult): Boolean =
+        FavoriteStore.isFavorite(this, ProfileStore.activeId(this), result.item.id, result.mode)
+
+    private fun renderRecents() {
+        val recents = Prefs.recents(this)
+        recentRow.removeAllViews()
+        recentRow.visibility = if (recents.isEmpty()) View.GONE else View.VISIBLE
+        if (recents.isEmpty()) return
+
+        recentRow.addView(
+            MarqueeUi.text(this, "RECENT", 11f, MarqueeUi.DUST, MarqueeUi.medium()).apply {
+                letterSpacing = 0.14f
+                setPadding(0, 0, dp(14), 0)
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(34)
+            ).apply { gravity = Gravity.CENTER_VERTICAL }
+        )
+        recents.forEach { value ->
+            val chip = MarqueeUi.button(this, value).apply {
+                setOnClickListener {
+                    setQuery(value)
+                    resultsView.post { resultsView.requestFocus() }
+                }
+            }
+            recentRow.addView(chip, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                dp(34)
+            ).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                marginEnd = dp(8)
+            })
+        }
     }
+
+    /**
+     * Accent- and punctuation-insensitive matching, so "greys" finds "Grey's" and
+     * "documentarios" finds "Documentários". Prefix hits rank above mid-word hits.
+     */
+    private fun filter(text: String): List<Pair<String, List<SearchResult>>> {
+        val needle = normalise(text)
+        if (needle.isEmpty()) return emptyList()
+        return listOf(
+            "Movies" to rank(Catalog.searchVodItems, MODE_VOD, needle),
+            "Series" to rank(Catalog.searchSeriesItems, MODE_SERIES, needle),
+            "Channels" to rank(Catalog.liveItems, MODE_LIVE, needle)
+        )
+    }
+
+    private fun rank(items: List<Catalog.Item>, mode: Int, needle: String): List<SearchResult> =
+        items.asSequence()
+            .mapNotNull { item ->
+                val name = normalise(Catalog.displayName(item.name))
+                val at = name.indexOf(needle)
+                if (at < 0) null else SearchHit(item, mode, at, name.length)
+            }
+            .sortedWith(compareBy({ it.index }, { it.length }))
+            .take(40)
+            .map { SearchResult(it.item, it.mode) }
+            .toList()
+
+    private fun normalise(value: String): String =
+        java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+            .replace(MARKS, "")
+            .lowercase()
+            .replace(NON_ALNUM, " ")
+            .trim()
 
     private fun toggleFavorite(result: SearchResult) {
         val added = FavoriteStore.toggle(
@@ -286,6 +372,7 @@ class SearchActivity : AppCompatActivity() {
     }
 
     private fun open(result: SearchResult) {
+        Prefs.addRecent(this, query)
         when (result.mode) {
             MODE_LIVE -> startActivity(
                 PlayerActivity.intent(this, client.liveUrl(result.item.id), result.item.name)
@@ -315,6 +402,9 @@ class SearchActivity : AppCompatActivity() {
     }
 
     companion object {
+        private val MARKS = Regex("\\p{Mn}+")
+        private val NON_ALNUM = Regex("[^a-z0-9]+")
+
         fun intent(context: Context) = Intent(context, SearchActivity::class.java)
     }
 }

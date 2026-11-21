@@ -12,9 +12,16 @@ class CategoryAdapter(
 ) : RecyclerView.Adapter<CategoryAdapter.Holder>() {
 
     private var items: List<XtreamClient.Category> = emptyList()
+    private var chipFilter: String? = null
 
     fun submit(list: List<XtreamClient.Category>) {
         items = list
+        notifyDataSetChanged()
+    }
+
+    /** When a language chip is active the prefix is redundant, so drop it. */
+    fun setChipFilter(chip: String?) {
+        chipFilter = chip
         notifyDataSetChanged()
     }
 
@@ -28,7 +35,8 @@ class CategoryAdapter(
 
     override fun onBindViewHolder(holder: Holder, position: Int) {
         val item = items[position]
-        holder.text.text = item.name
+        val label = CategoryNames.parse(item.name)
+        holder.text.text = if (chipFilter == null) label.line else label.shelf
         holder.itemView.setOnClickListener { onClick(item) }
     }
 

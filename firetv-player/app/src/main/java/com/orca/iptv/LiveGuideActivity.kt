@@ -286,7 +286,7 @@ class LiveGuideActivity : AppCompatActivity() {
 
     private fun updateCategoryLabel() {
         val name = currentCategory?.name ?: "All channels"
-        categoryButton.text = "${Catalog.displayName(name)}  ▾"
+        categoryButton.text = "${CategoryNames.parse(name).line}  ▾"
         val shown = adapter.itemCount
         countLabel.text = if (currentCategory == null) {
             "$shown channels"
@@ -326,10 +326,29 @@ class LiveGuideActivity : AppCompatActivity() {
 
         val options = ArrayList<Pair<String, Catalog.Section?>>()
         options.add("All channels" to null)
-        sections.forEach { options.add(Catalog.displayName(it.name) to it) }
+        sections
+            .map { it to CategoryNames.parse(it.name) }
+            .sortedWith(compareBy({ CategoryNames.sortKey(it.second.chip) }, { it.second.shelf }))
+            .forEach { (section, label) -> options.add(label.line to section) }
 
         val views = ArrayList<TextView>(options.size)
+        var lastChip: String? = null
         options.forEach { (label, section) ->
+            // Language headers keep 140 raw categories scannable.
+            val chip = section?.let { CategoryNames.parse(it.name).chip } ?: CategoryLabel.ALL
+            if (chip != lastChip) {
+                lastChip = chip
+                items.addView(
+                    MarqueeUi.text(this, chip.uppercase(), 11f, MarqueeUi.DUST, MarqueeUi.medium()).apply {
+                        letterSpacing = 0.14f
+                        setPadding(dp(16), dp(10), dp(16), dp(4))
+                    },
+                    LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                )
+            }
             val active = if (section == null) currentCategory == null else currentCategory?.id == section.id
             val item = MarqueeUi.text(
                 this,

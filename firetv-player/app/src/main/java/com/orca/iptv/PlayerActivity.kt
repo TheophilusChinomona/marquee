@@ -36,6 +36,7 @@ class PlayerActivity : AppCompatActivity() {
     private var itemExt = ""
     private var seriesId = ""
     private var episodeLabel = ""
+    private var episodeId = ""
     private var startPositionMs = 0L
     private var isLive = false
 
@@ -82,6 +83,7 @@ class PlayerActivity : AppCompatActivity() {
         itemExt = intent.getStringExtra(EXTRA_EXT).orEmpty()
         seriesId = intent.getStringExtra(EXTRA_SERIES_ID).orEmpty()
         episodeLabel = intent.getStringExtra(EXTRA_EPISODE).orEmpty()
+        episodeId = intent.getStringExtra(EXTRA_EPISODE_ID).orEmpty()
         startPositionMs = intent.getLongExtra(EXTRA_START, 0L)
         isLive = itemMode == MODE_LIVE || url.contains("/live/")
 
@@ -405,6 +407,7 @@ class PlayerActivity : AppCompatActivity() {
             mode = itemMode,
             seriesId = seriesId,
             episode = episodeLabel,
+            episodeId = episodeId,
             positionMs = position,
             durationMs = duration
         )
@@ -430,6 +433,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_EXT = "ext"
         private const val EXTRA_SERIES_ID = "series_id"
         private const val EXTRA_EPISODE = "episode"
+        private const val EXTRA_EPISODE_ID = "episode_id"
         private const val EXTRA_START = "start_position"
 
         fun intent(
@@ -443,6 +447,7 @@ class PlayerActivity : AppCompatActivity() {
             ext: String = "",
             seriesId: String = "",
             episode: String = "",
+            episodeId: String = "",
             startPositionMs: Long = 0L
         ): Intent =
             Intent(context, PlayerActivity::class.java)
@@ -455,6 +460,7 @@ class PlayerActivity : AppCompatActivity() {
                 .putExtra(EXTRA_EXT, ext)
                 .putExtra(EXTRA_SERIES_ID, seriesId)
                 .putExtra(EXTRA_EPISODE, episode)
+                .putExtra(EXTRA_EPISODE_ID, episodeId)
                 .putExtra(EXTRA_START, startPositionMs)
     }
 }

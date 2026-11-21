@@ -332,10 +332,7 @@ class SeriesActivity : AppCompatActivity() {
             }
             val data = result.getOrThrow()
             details = data
-            resumeEntry = HistoryStore.all(this@SeriesActivity, ProfileStore.activeId(this@SeriesActivity))
-                .firstOrNull {
-                    it.mode == MODE_SERIES && it.id == seriesId && it.episode.isNotBlank()
-                }
+            refreshResumeEntry()
             bindHero(data)
             renderSeasons(data)
             updateListButton()
@@ -556,8 +553,9 @@ class SeriesActivity : AppCompatActivity() {
             startPositionMs
         } else {
             HistoryStore.all(this, ProfileStore.activeId(this))
-                .firstOrNull {
-                    it.mode == MODE_SERIES && it.id == seriesId && it.episode == cleanTitle(episode)
+                .firstOrNull { entry ->
+                    entry.mode == MODE_SERIES && entry.id == seriesId &&
+                        entry.matchesEpisode(episode.id, cleanTitle(episode))
                 }?.positionMs ?: 0L
         }
         startActivity(
@@ -572,6 +570,7 @@ class SeriesActivity : AppCompatActivity() {
                 ext = episode.ext,
                 seriesId = seriesId,
                 episode = cleanTitle(episode),
+                episodeId = episode.id,
                 startPositionMs = position
             )
         )
@@ -618,7 +617,25 @@ class SeriesActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (details != null) updateListButton()
+        if (details == null) return
+        refreshResumeEntry()
+        updateListButton()
+        updatePlayButtonLabel()
+    }
+
+    /**
+     * Playback writes history while this screen is in the background, so the resume
+     * state has to be re-read on return — otherwise "Play" keeps starting at zero.
+     */
+    private fun refreshResumeEntry() {
+        resumeEntry = HistoryStore.all(this@SeriesActivity, ProfileStore.activeId(this@SeriesActivity))
+            .firstOrNull { it.mode == MODE_SERIES && it.id == seriesId && it.episode.isNotBlank() }
+    }
+
+    private fun updatePlayButtonLabel() {
+        if (!::playButton.isInitialized) return
+        val resume = resumeEntry
+        playButton.text = if (resume != null) "▶  Resume" else "▶  Play"
     }
 
     override fun onDestroy() {

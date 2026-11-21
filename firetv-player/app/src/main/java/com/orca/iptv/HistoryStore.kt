@@ -13,6 +13,7 @@ data class HistoryEntry(
     val mode: Int,
     val seriesId: String,
     val episode: String,
+    val episodeId: String = "",
     val positionMs: Long,
     val durationMs: Long,
     val updatedAt: Long
@@ -21,6 +22,14 @@ data class HistoryEntry(
         get() = if (durationMs <= 0L) 0f else (positionMs.toFloat() / durationMs).coerceIn(0f, 1f)
 
     fun toItem(): Catalog.Item = Catalog.Item(id, name, categoryId, icon, ext)
+
+    /**
+     * Episode identity moved from title text to the provider's episode id: titles
+     * are localised and can drift between requests, which silently lost the resume
+     * position for some series. Older entries have no id, so fall back to the title.
+     */
+    fun matchesEpisode(id: String, title: String): Boolean =
+        if (episodeId.isNotBlank() && id.isNotBlank()) episodeId == id else episode == title
 }
 
 /**
@@ -56,6 +65,7 @@ object HistoryStore {
                         mode = o.optInt("mode", MODE_VOD),
                         seriesId = o.optString("seriesId"),
                         episode = o.optString("episode"),
+                        episodeId = o.optString("episodeId"),
                         positionMs = o.optLong("position"),
                         durationMs = o.optLong("duration"),
                         updatedAt = o.optLong("updated")
@@ -77,10 +87,14 @@ object HistoryStore {
         mode: Int,
         seriesId: String = "",
         episode: String = "",
+        episodeId: String = "",
         positionMs: Long,
         durationMs: Long
     ) {
-        if (itemId.isBlank() || durationMs <= 0L) return
+        if (itemId.isBlank() || durationMs <= 0L) {
+            android.util.Log.d("MarqueeResume", "skipped: blank id or no duration")
+            return
+        }
         val progress = positionMs.toFloat() / durationMs
         val list = all(context, profileId).filterNot { it.id == itemId && it.mode == mode }.toMutableList()
         if (progress >= 0.95f) {
@@ -98,6 +112,7 @@ object HistoryStore {
                 mode = mode,
                 seriesId = seriesId,
                 episode = episode,
+                episodeId = episodeId,
                 positionMs = positionMs.coerceAtLeast(0L),
                 durationMs = durationMs,
                 updatedAt = System.currentTimeMillis()
@@ -123,6 +138,7 @@ object HistoryStore {
                     .put("mode", it.mode)
                     .put("seriesId", it.seriesId)
                     .put("episode", it.episode)
+                    .put("episodeId", it.episodeId)
                     .put("position", it.positionMs)
                     .put("duration", it.durationMs)
                     .put("updated", it.updatedAt)

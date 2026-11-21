@@ -22,7 +22,7 @@
             android:letterSpacing="-0.02"
             android:text="@string/login_title"
             android:textAllCaps="true"
-            android:textColor="@color/text"
+            android:textColor="@color/accent"
             android:textSize="44sp"
             android:textStyle="bold" />
 

@@ -12,25 +12,26 @@ import android.view.View
 import android.widget.TextView
 
 /**
- * Shared Marquee visual language. The reference is the 1920x1080 "House Lights
- * Down" prototype: near-black navy, bone type, and a single warm bulb accent.
+ * Shared Marquee visual language, now tuned to a Netflix-style 10-foot UI:
+ * pure black ground, white type, white focus outlines, and a single red brand
+ * accent. Artwork does the talking; chrome stays out of the way.
  */
 object MarqueeUi {
 
-    const val GROUND = 0xFF0A0E13.toInt()
-    const val BOOTH = 0xFF121820.toInt()
-    const val VELVET = 0xFF1B2430.toInt()
-    const val VELVET2 = 0xFF283345.toInt()
-    const val INK = 0xFFF4F1EA.toInt()
-    const val SAND = 0xFFBAC3D0.toInt()
-    const val DUST = 0xFF8794A8.toInt()
-    const val BULB = 0xFFFFD23F.toInt()
-    const val BULB_DIM = 0xFFB8860B.toInt()
-    const val AIR = 0xFFFF4B3E.toInt()
-    const val CURTAIN = 0xFFC8352A.toInt()
-    const val OLIVE = 0xFF2BC4A8.toInt()
-    const val LINE = 0x24F4F1EA
-    const val LINE2 = 0x57F4F1EA
+    const val GROUND = 0xFF000000.toInt()
+    const val BOOTH = 0xFF0A0A0A.toInt()
+    const val VELVET = 0xFF141414.toInt()
+    const val VELVET2 = 0xFF2A2A2A.toInt()
+    const val INK = 0xFFFFFFFF.toInt()
+    const val SAND = 0xFFB3B3B3.toInt()
+    const val DUST = 0xFF808080.toInt()
+    const val BULB = 0xFFE50914.toInt()
+    const val BULB_DIM = 0xFF7A050A.toInt()
+    const val AIR = 0xFFE50914.toInt()
+    const val CURTAIN = 0xFFE50914.toInt()
+    const val OLIVE = 0xFF46D369.toInt()
+    const val LINE = 0x24FFFFFF
+    const val LINE2 = 0x57FFFFFF
 
     fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
@@ -38,7 +39,7 @@ object MarqueeUi {
     fun dp(context: Context, value: Float): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
-    fun display(): Typeface = Typeface.create("serif", Typeface.BOLD)
+    fun display(): Typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
 
     fun body(): Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
 
@@ -105,8 +106,10 @@ object MarqueeUi {
     }
 
     fun button(context: Context, label: String, primary: Boolean = false): TextView {
-        val normalFill = if (primary) INK else VELVET2
+        val normalFill = if (primary) INK else 0xCC4D4D4D.toInt()
         val normalText = if (primary) GROUND else INK
+        val focusedFill = if (primary) 0xFFE6E6E6.toInt() else INK
+        val focusedText = GROUND
         return text(
             context,
             label,
@@ -117,12 +120,12 @@ object MarqueeUi {
             gravity = Gravity.CENTER
             isFocusable = true
             isFocusableInTouchMode = true
-            setPadding(dp(context, 22), 0, dp(context, 22), 0)
+            setPadding(dp(context, 26), 0, dp(context, 26), 0)
             minHeight = dp(context, 44)
             minWidth = 0
-            background = focusSelector(context, normalFill, BULB, 22)
-            setTextColor(textColors(normalText, GROUND))
-            setOnFocusChangeListener { v, _ -> scaleOnFocus(v, 1.06f) }
+            background = focusSelector(context, normalFill, focusedFill, 6)
+            setTextColor(textColors(normalText, focusedText))
+            setOnFocusChangeListener { v, _ -> scaleOnFocus(v, 1.04f) }
         }
     }
 
@@ -131,14 +134,14 @@ object MarqueeUi {
             context,
             label,
             if (live) 14f else 13f,
-            if (live) GROUND else INK,
+            INK,
             if (live) medium() else body()
         ).apply {
             gravity = Gravity.CENTER
             setPadding(dp(context, 9), 0, dp(context, 9), 0)
             minHeight = dp(context, 24)
             if (live) {
-                background = fill(context, AIR, 5)
+                background = fill(context, AIR, 3)
             } else if (fill) {
                 background = fill(context, VELVET2, 5)
             } else {

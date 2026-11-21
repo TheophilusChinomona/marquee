@@ -42,6 +42,7 @@ class MarqueeHeroView(
     private val meta: TextView
     private val plot: TextView
     private val reason: TextView
+    private val playButton: TextView
     private val listButton: TextView
     private var item: Catalog.Item? = null
     private var itemMode = MODE_VOD
@@ -61,20 +62,21 @@ class MarqueeHeroView(
 
         addView(View(context).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(MarqueeUi.GROUND, 0xCC0A0E13.toInt(), 0x000A0E13),
+                intArrayOf(MarqueeUi.GROUND, 0xCC000000.toInt(), 0x00000000),
                 GradientDrawable.Orientation.LEFT_RIGHT
             )
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
         addView(View(context).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(0x000A0E13, 0x880A0E13.toInt(), MarqueeUi.GROUND),
+                intArrayOf(0x00000000, 0x88000000.toInt(), MarqueeUi.GROUND),
                 GradientDrawable.Orientation.BOTTOM_TOP
             )
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
 
-        reason = MarqueeUi.text(context, "", 16f, MarqueeUi.SAND, MarqueeUi.body()).apply {
+        reason = MarqueeUi.text(context, "", 15f, MarqueeUi.BULB, MarqueeUi.medium()).apply {
             maxLines = 1
+            letterSpacing = 0.14f
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
         addView(reason, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
@@ -82,7 +84,7 @@ class MarqueeHeroView(
             topMargin = dp(104)
         })
 
-        title = MarqueeUi.text(context, "", 44f, MarqueeUi.INK, MarqueeUi.display()).apply {
+        title = MarqueeUi.text(context, "", 52f, MarqueeUi.INK, MarqueeUi.display()).apply {
             maxLines = 2
             ellipsize = android.text.TextUtils.TruncateAt.END
         }
@@ -97,7 +99,7 @@ class MarqueeHeroView(
         }
         addView(meta, LayoutParams(dp(720), LayoutParams.WRAP_CONTENT).apply {
             leftMargin = dp(48)
-            topMargin = dp(236)
+            topMargin = dp(266)
         })
 
         plot = MarqueeUi.text(context, "", 18f, MarqueeUi.INK, MarqueeUi.body()).apply {
@@ -107,52 +109,33 @@ class MarqueeHeroView(
         }
         addView(plot, LayoutParams(dp(660), LayoutParams.WRAP_CONTENT).apply {
             leftMargin = dp(48)
-            topMargin = dp(266)
+            topMargin = dp(296)
         })
 
         val buttons = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val play = MarqueeUi.button(context, "▶  Play", primary = true).apply {
+        playButton = MarqueeUi.button(context, "▶  Play", primary = true).apply {
             setOnClickListener { item?.let(onPlay) }
         }
-        val details = MarqueeUi.button(context, "Details").apply {
+        val details = MarqueeUi.button(context, "More Info").apply {
             setOnClickListener { item?.let(onDetails) }
         }
         listButton = MarqueeUi.button(context, "+  My List").apply {
             setOnClickListener { item?.let(onList) }
         }
-        buttons.addView(play, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)))
-        buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+        buttons.addView(playButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(46)))
+        buttons.addView(details, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(46)).apply {
             marginStart = dp(12)
         })
-        buttons.addView(listButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+        buttons.addView(listButton, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(46)).apply {
             marginStart = dp(12)
         })
 
-        val dots = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        repeat(3) { index ->
-            dots.addView(View(context).apply {
-                background = MarqueeUi.fill(
-                    context,
-                    if (index == 0) MarqueeUi.BULB else MarqueeUi.BULB_DIM,
-                    4
-                )
-            }, LinearLayout.LayoutParams(if (index == 0) dp(24) else dp(8), dp(8)).apply {
-                marginEnd = dp(7)
-            })
-        }
-        buttons.addView(dots, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(8)).apply {
-            marginStart = dp(24)
-        })
-
-        addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, dp(44)).apply {
+        addView(buttons, LayoutParams(LayoutParams.WRAP_CONTENT, dp(46)).apply {
             leftMargin = dp(48)
-            topMargin = dp(338)
+            topMargin = dp(368)
         })
     }
 
@@ -161,7 +144,7 @@ class MarqueeHeroView(
         this.itemMode = mode
         val displayName = Catalog.displayName(item.name)
         title.text = displayName
-        reason.text = "Tonight's feature"
+        reason.text = if (mode == MODE_SERIES) "SERIES" else "FILM"
         val pieces = ArrayList<String>(4)
         val year = Regex("""(19|20)\d{2}""").find(displayName)?.value
         if (year != null) pieces.add(year)
@@ -186,6 +169,10 @@ class MarqueeHeroView(
 
     fun setInList(inList: Boolean) {
         listButton.text = if (inList) "✓  In My List" else "+  My List"
+    }
+
+    fun requestDefaultFocus() {
+        if (item != null) playButton.requestFocus()
     }
 
     private fun dp(value: Int): Int = MarqueeUi.dp(context, value)
@@ -305,7 +292,7 @@ private class MarqueeCardView(
         clipChildren = false
 
         val frame = FrameLayout(context).apply {
-            background = MarqueeUi.fill(context, MarqueeUi.VELVET, 8)
+            background = MarqueeUi.fill(context, MarqueeUi.VELVET, 4)
             clipToOutline = true
             outlineProvider = ViewOutlineProvider.BACKGROUND
         }
@@ -320,7 +307,7 @@ private class MarqueeCardView(
 
         frame.addView(View(context).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(0x000A0E13, 0x990A0E13.toInt(), 0xE60A0E13.toInt()),
+                intArrayOf(0x00000000, 0x99000000.toInt(), 0xE6000000.toInt()),
                 GradientDrawable.Orientation.BOTTOM_TOP
             )
         }, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
@@ -375,7 +362,7 @@ private class MarqueeCardView(
         })
 
         ring = View(context).apply {
-            background = MarqueeUi.fill(context, Color.TRANSPARENT, 10, 2, MarqueeUi.BULB)
+            background = MarqueeUi.fill(context, Color.TRANSPARENT, 4, 3, MarqueeUi.INK)
             visibility = View.INVISIBLE
             isFocusable = false
         }
@@ -384,7 +371,7 @@ private class MarqueeCardView(
         isFocusable = true
         isFocusableInTouchMode = true
         setOnFocusChangeListener { v, hasFocus ->
-            MarqueeUi.scaleOnFocus(v, 1.08f)
+            MarqueeUi.scaleOnFocus(v, 1.06f)
             ring.visibility = if (hasFocus) View.VISIBLE else View.INVISIBLE
             meta.visibility = if (hasFocus) View.VISIBLE else View.GONE
             if (hasFocus) v.bringToFront()

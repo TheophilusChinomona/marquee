@@ -68,6 +68,7 @@ class DetailActivity : AppCompatActivity() {
         val scroll = NestedScrollView(this).apply {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_NEVER
+            isFocusable = false
         }
         content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(content, FrameLayout.LayoutParams(
@@ -90,7 +91,7 @@ class DetailActivity : AppCompatActivity() {
         ))
         hero.addView(View(this).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(MarqueeUi.GROUND, 0xCC0A0E13.toInt(), 0x000A0E13),
+                intArrayOf(MarqueeUi.GROUND, 0xCC000000.toInt(), 0x00000000),
                 GradientDrawable.Orientation.LEFT_RIGHT
             )
         }, FrameLayout.LayoutParams(
@@ -99,7 +100,7 @@ class DetailActivity : AppCompatActivity() {
         ))
         hero.addView(View(this).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(0x000A0E13, 0xAA0A0E13.toInt(), MarqueeUi.GROUND),
+                intArrayOf(0x00000000, 0xAA000000.toInt(), MarqueeUi.GROUND),
                 GradientDrawable.Orientation.BOTTOM_TOP
             )
         }, FrameLayout.LayoutParams(

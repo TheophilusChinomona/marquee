@@ -25,8 +25,6 @@ class BrowseActivity : AppCompatActivity() {
     private lateinit var client: XtreamClient
     private var mode = MODE_LIVE
     private var pendingCategoryId: String? = null
-    private lateinit var allowedStreamIds: Set<String>
-    private lateinit var allowedCategoryIds: Set<String>
 
     private lateinit var categoriesView: RecyclerView
     private lateinit var streamsView: RecyclerView
@@ -43,8 +41,6 @@ class BrowseActivity : AppCompatActivity() {
             return
         }
         client = XtreamClient(creds.server, creds.user, creds.pass)
-        allowedStreamIds = ScanAllowlist.streamIds(this)
-        allowedCategoryIds = ScanAllowlist.categoryIds(this)
         mode = intent.getIntExtra(EXTRA_MODE, MODE_LIVE)
         pendingCategoryId = intent.getStringExtra(EXTRA_CATEGORY)
 
@@ -154,10 +150,7 @@ class BrowseActivity : AppCompatActivity() {
                 status.text = "Could not load categories: ${it.message}"
                 return@launch
             }
-            var list = result.getOrDefault(emptyList())
-            if (mode == MODE_LIVE && allowedCategoryIds.isNotEmpty()) {
-                list = list.filter { it.id in allowedCategoryIds }
-            }
+            val list = result.getOrDefault(emptyList())
             android.util.Log.i("FireIPTV", "categories mode=$mode count=${list.size}")
             categoryAdapter.submit(list)
             val target = list.firstOrNull { it.id == pendingCategoryId } ?: list.firstOrNull()
@@ -177,11 +170,7 @@ class BrowseActivity : AppCompatActivity() {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     when (mode) {
-                        MODE_LIVE -> {
-                            val all = client.streams("get_live_streams", category.id)
-                            if (allowedStreamIds.isEmpty()) all
-                            else all.filter { it.id in allowedStreamIds }
-                        }
+                        MODE_LIVE -> client.streams("get_live_streams", category.id)
                         MODE_VOD -> client.streams("get_vod_streams", category.id)
                         else -> client.series(category.id)
                     }

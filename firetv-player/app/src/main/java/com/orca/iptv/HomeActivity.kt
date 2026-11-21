@@ -66,6 +66,7 @@ class HomeActivity : AppCompatActivity() {
             isFillViewport = true
             overScrollMode = View.OVER_SCROLL_NEVER
             clipToPadding = false
+            isFocusable = false
         }
         content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -83,7 +84,7 @@ class HomeActivity : AppCompatActivity() {
 
         root.addView(View(this).apply {
             background = MarqueeUi.verticalGradient(
-                intArrayOf(MarqueeUi.GROUND, 0xCC0A0E13.toInt(), 0x000A0E13),
+                intArrayOf(MarqueeUi.GROUND, 0xCC000000.toInt(), 0x00000000),
                 android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM
             )
             alpha = 0.95f
@@ -178,6 +179,7 @@ class HomeActivity : AppCompatActivity() {
                 dp(430)
             ))
             view.bind(featured, null, mode)
+            view.post { view.requestDefaultFocus() }
             content.addView(View(this), LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 dp(10)
@@ -350,7 +352,7 @@ class HomeActivity : AppCompatActivity() {
     private fun onNav(tab: String) {
         when (tab) {
             "home" -> scroll.smoothScrollTo(0, 0)
-            "list" -> scrollToMyList()
+            "list" -> startActivity(MyListActivity.intent(this))
             else -> MarqueeNav.navigate(this, tab)
         }
     }

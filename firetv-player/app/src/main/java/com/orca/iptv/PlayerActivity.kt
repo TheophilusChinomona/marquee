@@ -55,6 +55,12 @@ class PlayerActivity : AppCompatActivity() {
             if (controlsVisible) handler.postDelayed(this, 500L)
         }
     }
+    private val progressSaver = object : Runnable {
+        override fun run() {
+            saveProgress()
+            handler.postDelayed(this, 10_000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -97,6 +103,7 @@ class PlayerActivity : AppCompatActivity() {
         })
         play(url)
         showControls()
+        handler.postDelayed(progressSaver, 10_000L)
     }
 
     private fun buildOverlay() {
@@ -158,6 +165,8 @@ class PlayerActivity : AppCompatActivity() {
         top.addView(Space(this), LinearLayout.LayoutParams(0, 1, 0.01f))
 
         val back = MarqueeUi.button(this, "‹  Back").apply {
+            isFocusable = false
+            isFocusableInTouchMode = false
             setOnClickListener { finish() }
         }
         top.addView(back, LinearLayout.LayoutParams(dp(120), dp(40)))
@@ -172,8 +181,8 @@ class PlayerActivity : AppCompatActivity() {
         }
 
         seek = SeekBar(this).apply {
-            isFocusable = true
-            isFocusableInTouchMode = true
+            isFocusable = false
+            isFocusableInTouchMode = false
             max = 1000
             progressTintList = ColorStateList.valueOf(MarqueeUi.BULB)
             progressBackgroundTintList = ColorStateList.valueOf(MarqueeUi.BULB_DIM)
@@ -310,33 +319,21 @@ class PlayerActivity : AppCompatActivity() {
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
                     if (!controlsVisible) {
                         showControls()
-                    } else if (event.keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
-                        currentFocus === playPause
-                    ) {
-                        togglePlay()
                     } else {
-                        return super.dispatchKeyEvent(event)
+                        togglePlay()
                     }
                     return true
                 }
 
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (!controlsVisible) {
-                        showControls()
-                    } else if (!isLive) {
-                        seekBy(-10_000L)
-                        showControls()
-                    }
+                    showControls()
+                    if (!isLive) seekBy(-10_000L)
                     return true
                 }
 
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (!controlsVisible) {
-                        showControls()
-                    } else if (!isLive) {
-                        seekBy(10_000L)
-                        showControls()
-                    }
+                    showControls()
+                    if (!isLive) seekBy(10_000L)
                     return true
                 }
 

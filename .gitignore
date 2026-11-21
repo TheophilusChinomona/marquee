@@ -1,5 +1,6 @@
 .env
 .env.*
+.commandcode/
 channel-results/
 goose-*.tar.bz2
 .orca/

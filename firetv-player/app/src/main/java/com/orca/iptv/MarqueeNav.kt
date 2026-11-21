@@ -50,16 +50,10 @@ class MarqueeNav(
         profileAvatar.background = MarqueeUi.fill(context, avatarColor(profile.name), 7)
     }
 
-    private fun wordmark(): LinearLayout = LinearLayout(context).apply {
-        gravity = Gravity.CENTER_VERTICAL
-        orientation = HORIZONTAL
-        addView(MarqueeUi.text(context, "MARQUEE", 22f, MarqueeUi.INK, MarqueeUi.display()).apply {
-            letterSpacing = 0.14f
-        })
-        addView(MarqueeUi.text(context, "•••", 16f, MarqueeUi.BULB, MarqueeUi.body()).apply {
-            setPadding(dp(8), 0, 0, 0)
-        })
-    }
+    private fun wordmark(): TextView =
+        MarqueeUi.text(context, "MARQUEE", 26f, MarqueeUi.BULB, MarqueeUi.display()).apply {
+            letterSpacing = -0.01f
+        }
 
     private fun tabs(): LinearLayout = LinearLayout(context).apply {
         orientation = HORIZONTAL
@@ -99,9 +93,16 @@ class MarqueeNav(
             isFocusable = true
             isFocusableInTouchMode = true
             setPadding(dp(4), dp(4), dp(14), dp(4))
-            background = MarqueeUi.focusSelector(context, 0xB31B2430.toInt(), MarqueeUi.BULB, 18)
+            background = MarqueeUi.focusSelector(
+                context,
+                Color.TRANSPARENT,
+                Color.TRANSPARENT,
+                6,
+                2,
+                MarqueeUi.INK
+            )
             setOnFocusChangeListener { v, _ ->
-                MarqueeUi.scaleOnFocus(v, 1.05f)
+                MarqueeUi.scaleOnFocus(v, 1.04f)
             }
             addView(avatar, LayoutParams(dp(24), dp(24)))
             addView(name, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT).apply {
@@ -111,17 +112,18 @@ class MarqueeNav(
                 context.startActivity(Intent(context, ProfilesActivity::class.java))
             }
         }
-        name.setTextColor(MarqueeUi.textColors(MarqueeUi.INK, MarqueeUi.GROUND))
+        name.setTextColor(MarqueeUi.textColors(MarqueeUi.INK, MarqueeUi.INK))
         name.isDuplicateParentStateEnabled = true
         return Triple(chip, name, avatar)
     }
 
     private fun avatarColor(name: String): Int {
         val colors = intArrayOf(
-            MarqueeUi.CURTAIN,
-            MarqueeUi.BULB,
-            MarqueeUi.OLIVE,
-            MarqueeUi.AIR
+            0xFFE50914.toInt(),
+            0xFF0071EB.toInt(),
+            0xFF46D369.toInt(),
+            0xFFB7410E.toInt(),
+            0xFF8E44AD.toInt()
         )
         val index = ((name.hashCode() % colors.size) + colors.size) % colors.size
         return colors[index]
@@ -137,32 +139,22 @@ class MarqueeNav(
         private val onSelected: (String) -> Unit
     ) : FrameLayout(context) {
 
-        private val dot: View
         private val labelView: TextView
 
         init {
             isFocusable = true
             isFocusableInTouchMode = true
             clipChildren = false
-            background = MarqueeUi.focusSelector(context, Color.TRANSPARENT, MarqueeUi.BULB, 16)
-            setOnFocusChangeListener { v, _ -> MarqueeUi.scaleOnFocus(v, 1.05f) }
+            background = MarqueeUi.focusSelector(context, Color.TRANSPARENT, Color.TRANSPARENT, 0)
+            setOnFocusChangeListener { v, _ -> MarqueeUi.scaleOnFocus(v, 1.04f) }
 
             labelView = MarqueeUi.text(context, label, 18f, MarqueeUi.SAND, MarqueeUi.body()).apply {
                 gravity = Gravity.CENTER
-                setPadding(MarqueeUi.dp(context, 13), 0, MarqueeUi.dp(context, 13), 0)
-                setTextColor(MarqueeUi.textColors(MarqueeUi.SAND, MarqueeUi.GROUND, MarqueeUi.INK))
+                setPadding(MarqueeUi.dp(context, 12), 0, MarqueeUi.dp(context, 12), 0)
+                setTextColor(MarqueeUi.textColors(MarqueeUi.SAND, MarqueeUi.INK, MarqueeUi.INK))
                 isDuplicateParentStateEnabled = true
             }
             addView(labelView, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-
-            dot = View(context).apply {
-                background = MarqueeUi.fill(context, MarqueeUi.BULB, 3)
-                visibility = if (selected) VISIBLE else GONE
-            }
-            addView(dot, LayoutParams(MarqueeUi.dp(context, 6), MarqueeUi.dp(context, 6)).apply {
-                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                bottomMargin = MarqueeUi.dp(context, 1)
-            })
 
             isSelected = selected
             setOnClickListener { onSelected(key) }
@@ -170,7 +162,9 @@ class MarqueeNav(
 
         override fun setSelected(selected: Boolean) {
             super.setSelected(selected)
-            dot.visibility = if (selected) VISIBLE else GONE
+            labelView.setTypeface(
+                if (selected) MarqueeUi.medium() else MarqueeUi.body()
+            )
         }
     }
 
@@ -181,7 +175,7 @@ class MarqueeNav(
                 "live" -> context.startActivity(LiveGuideActivity.intent(context))
                 "movies" -> context.startActivity(BrowseActivity.intent(context, MODE_VOD, ""))
                 "series" -> context.startActivity(BrowseActivity.intent(context, MODE_SERIES, ""))
-                "list" -> context.startActivity(homeIntent(context, "list"))
+                "list" -> context.startActivity(MyListActivity.intent(context))
                 "search" -> context.startActivity(SearchActivity.intent(context))
             }
         }

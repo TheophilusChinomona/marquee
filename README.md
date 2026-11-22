@@ -14,6 +14,7 @@ Marquee started as a reaction to that. The goal was to build the opposite:
 - **Nothing between you and the content.** Near-black ground, one accent colour, and type that reads from across the room.
 - **Fast, local state.** Profiles, My List, watch history, and recommendations live on the device. No accounts, no telemetry, no cloud round-trips.
 - **Continuity.** Stop halfway through an episode, restart the app weeks later, and pick up from the exact second — with Continue Watching and a Resume button where you expect them.
+- **Stay in the player.** Previous, Next and an episode list sit in the player's control bar, so being on the wrong episode never means backing out to the series page — and finishing one rolls into the next.
 - **Everything your provider gives you.** Not a curated subset: the full live channel list, every category, and the EPG your provider offers.
 
 The result is a small, opinionated client that treats a Fire TV Stick like a cinema screen instead of a web page.

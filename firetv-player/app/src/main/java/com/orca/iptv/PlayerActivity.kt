@@ -37,7 +37,8 @@ class PlayerActivity : AppCompatActivity() {
     private var seriesId = ""
     private var episodeLabel = ""
     private var episodeId = ""
-    private val queue = ArrayList<QueuedEpisode>()
+    private val episodes = ArrayList<QueuedEpisode>()
+    private var episodeIndex = -1
     private var advancing = false
     private var startPositionMs = 0L
     private var isLive = false
@@ -47,7 +48,15 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var seek: SeekBar
     private lateinit var timeLabel: TextView
     private lateinit var titleLabel: TextView
+    private lateinit var nowPlaying: TextView
     private lateinit var liveBadge: TextView
+    private lateinit var prevButton: TextView
+    private lateinit var nextButton: TextView
+    private var pickerButton: TextView? = null
+    private var controlIndex = 0
+    private val controlActions = ArrayList<Pair<View, () -> Unit>>()
+
+    private var episodePanel: FrameLayout? = null
     private var controlsVisible = false
 
     private val handler = Handler(Looper.getMainLooper())
@@ -86,7 +95,13 @@ class PlayerActivity : AppCompatActivity() {
         seriesId = intent.getStringExtra(EXTRA_SERIES_ID).orEmpty()
         episodeLabel = intent.getStringExtra(EXTRA_EPISODE).orEmpty()
         episodeId = intent.getStringExtra(EXTRA_EPISODE_ID).orEmpty()
-        queue.addAll(QueuedEpisode.parse(intent.getStringExtra(EXTRA_QUEUE)))
+        episodes.addAll(QueuedEpisode.parse(intent.getStringExtra(EXTRA_EPISODES)))
+        if (episodes.isEmpty()) {
+            // Older callers only sent what was left to play.
+            episodes.addAll(QueuedEpisode.parse(intent.getStringExtra(EXTRA_QUEUE)))
+        } else {
+            episodeIndex = intent.getIntExtra(EXTRA_INDEX, -1)
+        }
         startPositionMs = intent.getLongExtra(EXTRA_START, 0L)
         isLive = itemMode == MODE_LIVE || url.contains("/live/")
 
@@ -120,6 +135,9 @@ class PlayerActivity : AppCompatActivity() {
         overlay = FrameLayout(this).apply {
             visibility = View.GONE
             clipChildren = false
+            isFocusable = true
+            isFocusableInTouchMode = true
+            descendantFocusability = FrameLayout.FOCUS_AFTER_DESCENDANTS
         }
         root.addView(overlay, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT,
@@ -216,15 +234,33 @@ class PlayerActivity : AppCompatActivity() {
                 }
             })
         }
+        val upcoming = nextEpisode()
+        nowPlaying = MarqueeUi.text(
+            this,
+            currentEpisode?.let { episodeLabelOf(it) }.orEmpty(),
+            15f,
+            MarqueeUi.INK,
+            MarqueeUi.medium()
+        ).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            visibility = if (currentEpisode == null) View.GONE else View.VISIBLE
+            setPadding(0, dp(6), 0, 0)
+        }
+        bottom.addView(nowPlaying, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+
         val upNext = MarqueeUi.text(
             this,
-            queue.firstOrNull()?.let { "Up next · ${it.title}" }.orEmpty(),
+            upcoming?.let { "Up next · ${episodeLabelOf(it)}" }.orEmpty(),
             14f,
             MarqueeUi.SAND,
             MarqueeUi.body()
         ).apply {
-            visibility = if (queue.isEmpty()) View.GONE else View.VISIBLE
-            setPadding(0, dp(6), 0, dp(4))
+            visibility = if (upcoming == null) View.GONE else View.VISIBLE
+            setPadding(0, dp(2), 0, dp(4))
         }
         bottom.addView(upNext, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -252,6 +288,47 @@ class PlayerActivity : AppCompatActivity() {
             setOnClickListener { togglePlay() }
         }
         controls.addView(playPause, LinearLayout.LayoutParams(dp(170), dp(44)))
+
+        if (episodes.isNotEmpty()) {
+            prevButton = MarqueeUi.button(this, "‹  Prev").apply {
+                visibility = if (hasPrevious) View.VISIBLE else View.GONE
+                setOnClickListener { playEpisodeAt(episodeIndex - 1) }
+            }
+            controls.addView(prevButton, LinearLayout.LayoutParams(dp(140), dp(44)).apply {
+                marginStart = dp(12)
+            })
+
+            nextButton = MarqueeUi.button(this, "Next  ›").apply {
+                visibility = if (hasNext) View.VISIBLE else View.GONE
+                setOnClickListener { playEpisodeAt(episodeIndex + 1) }
+            }
+            controls.addView(nextButton, LinearLayout.LayoutParams(dp(140), dp(44)).apply {
+                marginStart = dp(12)
+            })
+
+            if (episodes.size > 1) {
+                pickerButton = MarqueeUi.button(this, "Episodes").apply {
+                    setOnClickListener { toggleEpisodePanel() }
+                }
+                controls.addView(pickerButton, LinearLayout.LayoutParams(dp(170), dp(44)).apply {
+                    marginStart = dp(12)
+                })
+            }
+
+        }
+
+        // The row is walked by index rather than by focus: Fire OS drops focus after
+        // a seek, and then Prev/Next/Episodes could not be reached at all.
+        controlActions.clear()
+        controlActions.add(playPause to { togglePlay() })
+        if (episodes.isNotEmpty()) {
+            // Only the buttons actually on screen: a hidden one used to eat a press.
+            if (hasPrevious) controlActions.add(prevButton to { playEpisodeAt(episodeIndex - 1) })
+            if (hasNext) controlActions.add(nextButton to { playEpisodeAt(episodeIndex + 1) })
+            if (episodes.size > 1) {
+                pickerButton?.let { controlActions.add(it to { toggleEpisodePanel() }) }
+            }
+        }
         bottom.addView(controls, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             dp(44)
@@ -262,6 +339,179 @@ class PlayerActivity : AppCompatActivity() {
             FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM
         ))
+
+        if (episodes.size > 1) {
+            episodePanel = buildEpisodePanel()
+            episodePanel?.let { panel ->
+                overlay.addView(panel, FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT
+                ))
+            }
+        }
+    }
+
+    /**
+     * Jump straight to another episode, whether the viewer pressed Next, Prev or
+     * picked one from the list. The player handles a single episode, so a fresh
+     * activity takes over, carrying the whole list so the buttons stay available.
+     */
+    private fun playEpisodeAt(index: Int) {
+        if (advancing) return
+        val target = episodes.getOrNull(index) ?: return
+        advancing = true
+        saveProgress()
+        startActivity(
+            intent(
+                this,
+                target.url,
+                title?.toString().orEmpty(),
+                id = itemId,
+                mode = itemMode,
+                icon = itemIcon,
+                categoryId = itemCategory,
+                ext = itemExt,
+                seriesId = seriesId,
+                episode = target.title,
+                episodeId = target.id,
+                episodesJson = QueuedEpisode.toJson(episodes),
+                episodeIndex = index
+            )
+        )
+        finish()
+    }
+
+    private fun toggleEpisodePanel() {
+        val panel = episodePanel ?: return
+        if (panel.visibility == View.VISIBLE) {
+            hideEpisodePanel()
+            return
+        }
+        panel.visibility = View.VISIBLE
+        handler.removeCallbacks(hideRunnable)
+        val current = panel.findViewWithTag<View>("current")
+        (current ?: panel).requestFocus()
+    }
+
+    private fun hideEpisodePanel() {
+        val panel = episodePanel ?: return
+        panel.visibility = View.GONE
+        playPause.requestFocus()
+        showControls()
+    }
+
+    private fun buildEpisodePanel(): FrameLayout {
+        val panel = FrameLayout(this).apply {
+            visibility = View.GONE
+            isFocusable = true
+        }
+        panel.addView(View(this).apply { setBackgroundColor(0xCC000000.toInt()) },
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            ))
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(22), dp(20), dp(20))
+            background = MarqueeUi.fill(this@PlayerActivity, MarqueeUi.VELVET, 14)
+        }
+        column.addView(MarqueeUi.text(this, "Episodes", 24f, MarqueeUi.INK, MarqueeUi.display()))
+        column.addView(MarqueeUi.text(
+            this,
+            "${episodes.size} in this series",
+            14f,
+            MarqueeUi.SAND,
+            MarqueeUi.body()
+        ).apply { setPadding(0, dp(4), 0, dp(14)) })
+
+        val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        episodes.forEachIndexed { index, episode ->
+            val row = TextView(this).apply {
+                text = episodeLabelOf(episode)
+                textSize = 16f
+                typeface = MarqueeUi.medium()
+                setTextColor(MarqueeUi.INK)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                isFocusable = true
+                isFocusableInTouchMode = true
+                background = MarqueeUi.focusSelector(
+                    this@PlayerActivity,
+                    MarqueeUi.VELVET2,
+                    MarqueeUi.BULB,
+                    8
+                )
+                if (index == episodeIndex) {
+                    tag = "current"
+                    text = "▍ ${episodeLabelOf(episode)}"
+                }
+                setOnClickListener { playEpisodeAt(index) }
+            }
+            list.addView(row, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(4) })
+        }
+
+        val scroller = android.widget.ScrollView(this).apply {
+            isFocusable = false
+            addView(list, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+        column.addView(scroller, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            0,
+            1f
+        ))
+
+        panel.addView(column, FrameLayout.LayoutParams(
+            dp(560),
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            Gravity.END
+        ).apply {
+            topMargin = dp(24)
+            bottomMargin = dp(24)
+            marginEnd = dp(24)
+        })
+        return panel
+    }
+
+    private val hasPrevious: Boolean get() = episodeIndex > 0
+    private val hasNext: Boolean get() = episodeIndex >= 0 && episodeIndex + 1 < episodes.size
+    private val currentEpisode: QueuedEpisode? get() = episodes.getOrNull(episodeIndex)
+
+    private fun nextEpisode(): QueuedEpisode? = episodes.getOrNull(episodeIndex + 1)
+
+    private fun moveControl(delta: Int) {
+        if (controlActions.isEmpty()) return
+        controlIndex = (controlIndex + delta).coerceIn(0, controlActions.size - 1)
+        controlActions[controlIndex].first.requestFocus()
+    }
+
+    private fun activateControl() {
+        controlActions.getOrNull(controlIndex)?.second?.invoke()
+    }
+
+    private fun episodeLabelOf(episode: QueuedEpisode): String {
+        val prefix = when {
+            episode.season > 0 && episode.number > 0 -> "S${episode.season} E${episode.number}"
+            episode.number > 0 -> "E${episode.number}"
+            else -> ""
+        }
+        // Some providers name the episode with its own code ("S01E05");
+        // echoing that next to the season/episode number reads as noise.
+        val title = episode.title
+        val redundant = title.isBlank() ||
+            (episode.number > 0 && EPISODE_CODE.matches(title.trim()))
+        return when {
+            prefix.isBlank() -> title
+            redundant -> prefix
+            else -> "$prefix · $title"
+        }
     }
 
     private fun play(url: String) {
@@ -275,32 +525,10 @@ class PlayerActivity : AppCompatActivity() {
         updatePlayPause()
     }
 
-    /**
-     * Continue with the next episode in the queue instead of dropping the viewer back
-     * on the series page. A fresh activity keeps the player code single-episode.
-     */
+    /** Roll on when an episode ends. */
     private fun advanceToNext() {
-        if (advancing || queue.isEmpty()) return
-        advancing = true
-        val next = queue.removeAt(0)
-        saveProgress()
-        startActivity(
-            intent(
-                this,
-                next.url,
-                title?.toString().orEmpty(),
-                id = itemId,
-                mode = itemMode,
-                icon = itemIcon,
-                categoryId = itemCategory,
-                ext = itemExt,
-                seriesId = seriesId,
-                episode = next.title,
-                episodeId = next.id,
-                queueJson = QueuedEpisode.toJson(queue)
-            )
-        )
-        finish()
+        if (advancing || !hasNext) return
+        playEpisodeAt(episodeIndex + 1)
     }
 
     private fun togglePlay() {
@@ -342,7 +570,12 @@ class PlayerActivity : AppCompatActivity() {
         handler.postDelayed(hideRunnable, 4500L)
         handler.removeCallbacks(tickRunnable)
         handler.post(tickRunnable)
-        if (::playPause.isInitialized) playPause.requestFocus()
+        if (::playPause.isInitialized) {
+            controlIndex = 0
+            playPause.post {
+                if (controlsVisible) controlActions.firstOrNull()?.first?.requestFocus()
+            }
+        }
         updatePlayPause()
         updateProgress()
     }
@@ -359,34 +592,62 @@ class PlayerActivity : AppCompatActivity() {
         if (event.action == KeyEvent.ACTION_DOWN) {
             when (event.keyCode) {
                 KeyEvent.KEYCODE_BACK -> {
+                    if (episodePanel?.visibility == View.VISIBLE) {
+                        hideEpisodePanel()
+                        return true
+                    }
                     if (controlsVisible) {
                         hideControls()
                         return true
                     }
                 }
 
-                KeyEvent.KEYCODE_DPAD_CENTER,
-                KeyEvent.KEYCODE_ENTER,
+                // The remote's play/pause key is unambiguous.
                 KeyEvent.KEYCODE_SPACE,
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                    if (!controlsVisible) {
-                        showControls()
-                    } else {
-                        togglePlay()
-                    }
+                    togglePlay()
                     return true
                 }
 
+                // Select belongs to whatever has focus once the controls are up;
+                // otherwise Prev/Next/Episodes could never be pressed.
+                KeyEvent.KEYCODE_DPAD_CENTER,
+                KeyEvent.KEYCODE_ENTER -> {
+                    if (!controlsVisible) {
+                        showControls()
+                        return true
+                    }
+                    if (episodePanel?.visibility != View.VISIBLE) {
+                        activateControl()
+                        return true
+                    }
+                    // The episode list handles its own selection.
+                }
+
+                // Scrubbing while the controls are hidden; once they are up the D-pad
+                // walks the buttons instead.
                 KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    showControls()
-                    if (!isLive) seekBy(-10_000L)
-                    return true
+                    if (!controlsVisible) {
+                        showControls()
+                        if (!isLive) seekBy(-10_000L)
+                        return true
+                    }
+                    if (episodePanel?.visibility != View.VISIBLE) {
+                        moveControl(-1)
+                        return true
+                    }
                 }
 
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    showControls()
-                    if (!isLive) seekBy(10_000L)
-                    return true
+                    if (!controlsVisible) {
+                        showControls()
+                        if (!isLive) seekBy(10_000L)
+                        return true
+                    }
+                    if (episodePanel?.visibility != View.VISIBLE) {
+                        moveControl(1)
+                        return true
+                    }
                 }
 
                 KeyEvent.KEYCODE_DPAD_UP,
@@ -520,6 +781,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun dp(value: Int): Int = MarqueeUi.dp(this, value)
 
     companion object {
+        private val EPISODE_CODE = Regex("^[Ss]\\d{1,2}\\s*[Ee]\\d{1,3}$")
         private const val EXTRA_URL = "url"
         private const val EXTRA_NAME = "name"
         private const val EXTRA_ID = "id"
@@ -531,6 +793,8 @@ class PlayerActivity : AppCompatActivity() {
         private const val EXTRA_EPISODE = "episode"
         private const val EXTRA_EPISODE_ID = "episode_id"
         private const val EXTRA_QUEUE = "next_queue"
+        private const val EXTRA_EPISODES = "episodes"
+        private const val EXTRA_INDEX = "episode_index"
         private const val EXTRA_START = "start_position"
 
         fun intent(
@@ -546,6 +810,8 @@ class PlayerActivity : AppCompatActivity() {
             episode: String = "",
             episodeId: String = "",
             queueJson: String = "",
+            episodesJson: String = "",
+            episodeIndex: Int = -1,
             startPositionMs: Long = 0L
         ): Intent =
             Intent(context, PlayerActivity::class.java)
@@ -560,6 +826,8 @@ class PlayerActivity : AppCompatActivity() {
                 .putExtra(EXTRA_EPISODE, episode)
                 .putExtra(EXTRA_EPISODE_ID, episodeId)
                 .putExtra(EXTRA_QUEUE, queueJson)
+                .putExtra(EXTRA_EPISODES, episodesJson)
+                .putExtra(EXTRA_INDEX, episodeIndex)
                 .putExtra(EXTRA_START, startPositionMs)
     }
 }

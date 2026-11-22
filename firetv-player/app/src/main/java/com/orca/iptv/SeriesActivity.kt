@@ -571,7 +571,8 @@ class SeriesActivity : AppCompatActivity() {
                 seriesId = seriesId,
                 episode = cleanTitle(episode),
                 episodeId = episode.id,
-                queueJson = queueAfter(episode),
+                episodesJson = episodeListJson(),
+                episodeIndex = episodeIndex(episode),
                 startPositionMs = position
             )
         )
@@ -587,28 +588,30 @@ class SeriesActivity : AppCompatActivity() {
     }
 
 
+    private fun flatEpisodes(): List<XtreamClient.EpisodeDetails> =
+        details?.seasons?.flatMap { it.episodes }.orEmpty()
+
+    private fun episodeIndex(episode: XtreamClient.EpisodeDetails): Int =
+        flatEpisodes().indexOfFirst { it.id == episode.id }
+
     /**
-     * Everything after this episode, in season order, so the player can roll on
-     * without sending the viewer back to the rail. URLs are resolved here because
-     * the player has no provider client.
+     * The whole series in season order, so the player can offer Previous, Next and
+     * an episode list without going back to this page. URLs are resolved here
+     * because the player has no provider client.
      */
-    private fun queueAfter(episode: XtreamClient.EpisodeDetails): String {
-        val data = details ?: return ""
-        val flat = data.seasons.flatMap { it.episodes }
-        val index = flat.indexOfFirst { it.id == episode.id }
-        if (index < 0) return ""
-        val rest = flat.drop(index + 1)
-        if (rest.isEmpty()) return ""
+    private fun episodeListJson(): String {
+        val flat = flatEpisodes()
+        if (flat.isEmpty()) return ""
 
         val array = org.json.JSONArray()
-        rest.forEach { next ->
+        flat.forEach { item ->
             array.put(
                 org.json.JSONObject()
-                    .put("id", next.id)
-                    .put("url", client.seriesUrl(next.id, next.ext))
-                    .put("title", cleanTitle(next))
-                    .put("season", next.season)
-                    .put("number", next.number)
+                    .put("id", item.id)
+                    .put("url", client.seriesUrl(item.id, item.ext))
+                    .put("title", cleanTitle(item))
+                    .put("season", item.season)
+                    .put("number", item.number)
             )
         }
         return array.toString()

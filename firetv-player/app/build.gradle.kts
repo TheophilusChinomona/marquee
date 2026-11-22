@@ -21,8 +21,8 @@ android {
         applicationId = "com.orca.iptv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.6.1"
+        versionCode = 9
+        versionName = "1.7"
     }
 
     signingConfigs {

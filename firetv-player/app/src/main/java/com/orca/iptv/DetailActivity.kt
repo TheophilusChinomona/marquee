@@ -242,7 +242,10 @@ class DetailActivity : AppCompatActivity() {
         progress.visibility = View.VISIBLE
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.movieDetails(itemId) }
+                runCatching {
+                    if (Online.isOnline(itemId)) Online.movieDetails(this@DetailActivity, itemId)
+                    else client.movieDetails(itemId)
+                }
             }
             progress.visibility = View.GONE
             result.onSuccess { data ->
@@ -276,6 +279,10 @@ class DetailActivity : AppCompatActivity() {
         val position = HistoryStore.all(this, ProfileStore.activeId(this))
             .firstOrNull { it.id == itemId && it.mode == itemMode }
             ?.positionMs ?: 0L
+        if (Online.isOnline(itemId)) {
+            playOnline(position)
+            return
+        }
         startActivity(
             PlayerActivity.intent(
                 this,
@@ -288,6 +295,41 @@ class DetailActivity : AppCompatActivity() {
                 startPositionMs = position
             )
         )
+    }
+
+    /** An online film resolves its stream at play time; the link is short-lived. */
+    private fun playOnline(position: Long) {
+        progress.visibility = View.VISIBLE
+        playButton.isEnabled = false
+        scope.launch {
+            val playback = withContext(Dispatchers.IO) {
+                runCatching { Online.resolve(this@DetailActivity, itemId) }.getOrNull()
+            }
+            progress.visibility = View.GONE
+            playButton.isEnabled = true
+            if (isFinishing) return@launch
+            if (playback == null) {
+                android.widget.Toast.makeText(
+                    this@DetailActivity,
+                    "No working stream for this title right now",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                return@launch
+            }
+            startActivity(
+                PlayerActivity.intent(
+                    this@DetailActivity,
+                    playback.url,
+                    Catalog.displayName(itemName),
+                    itemId,
+                    MODE_VOD,
+                    itemIcon,
+                    "",
+                    ext = playback.container,
+                    startPositionMs = position
+                )
+            )
+        }
     }
 
     private fun toggleList() {

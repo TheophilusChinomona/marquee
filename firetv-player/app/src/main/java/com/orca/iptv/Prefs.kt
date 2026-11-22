@@ -26,6 +26,53 @@ object Prefs {
             .apply()
     }
 
+    /**
+     * The online fallback (frameX) is on out of the box, so a title the provider
+     * does not carry can still be found. Every call it makes is behind this flag,
+     * because it is a third-party service that can be slow or disappear.
+     */
+    fun onlineEnabled(context: Context): Boolean =
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ONLINE, true)
+
+    fun setOnlineEnabled(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_ONLINE, enabled).apply()
+    }
+
+    private const val KEY_ONLINE = "online_sources"
+    private const val KEY_RESOLVER = "resolver_base"
+
+    /** Where our own resolver listens. Empty disables it and leaves frameX alone. */
+    fun resolverBase(context: Context): String =
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getString(KEY_RESOLVER, DEFAULT_RESOLVER_BASE).orEmpty()
+
+    fun setResolverBase(context: Context, base: String) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .edit().putString(KEY_RESOLVER, base.trim()).apply()
+    }
+
+    /**
+     * Optional credential for the resolver host. Either a Cloudflare Access service
+     * token written as `clientId:clientSecret`, or a plain bearer token that
+     * RESOLVER_TOKEN accepts. Blank means the host is open on the LAN.
+     */
+    fun resolverKey(context: Context): String =
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getString(KEY_RESOLVER_KEY, "").orEmpty()
+
+    fun setResolverKey(context: Context, key: String) {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .edit().putString(KEY_RESOLVER_KEY, key.trim()).apply()
+    }
+
+    private const val KEY_RESOLVER_KEY = "resolver_key"
+
+    // Shipped builds must not point at anybody's server: the resolver is opt-in and
+    // configured per device (Profiles -> Server).
+    private const val DEFAULT_RESOLVER_BASE = ""
+
     private const val RECENT_FILE = "search"
     private const val RECENT_KEY = "recent"
     private const val RECENT_LIMIT = 6

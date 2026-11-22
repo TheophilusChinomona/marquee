@@ -20,3 +20,8 @@ screenshots/player-live.png
 screenshots/player-vod.png
 screenshots/profiles.png
 screenshots/icon-512.png
+
+# Resolver: dependencies and local state
+resolver/node_modules/
+resolver/*.log
+resolver/data/

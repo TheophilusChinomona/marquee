@@ -90,6 +90,7 @@ object ProfileStore {
         }
         FavoriteStore.clear(context, id)
         HistoryStore.clear(context, id)
+        WatchLedger(context).use { it.clearProfile(id) }
         save(context, list)
         return true
     }

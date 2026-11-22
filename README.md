@@ -12,7 +12,7 @@ Marquee started as a reaction to that. The goal was to build the opposite:
 
 - **A living-room experience first.** Large artwork, a cinematic billboard, horizontal rails, and a focus system designed for a D-pad, not a mouse.
 - **Nothing between you and the content.** Near-black ground, one accent colour, and type that reads from across the room.
-- **Fast, local state.** Profiles, My List, watch history, and recommendations live on the device. No accounts, no telemetry, no cloud round-trips.
+- **Fast local playback state.** Profiles, My List and resume state live on the device. Optional self-hosted recommendations sync viewing evidence to your own server; no telemetry.
 - **Continuity.** Stop halfway through an episode, restart the app weeks later, and pick up from the exact second — with Continue Watching and a Resume button where you expect them.
 - **Stay in the player.** Previous, Next and an episode list sit in the player's control bar, so being on the wrong episode never means backing out to the series page — and finishing one rolls into the next.
 - **Everything your provider gives you.** Not a curated subset: the full live channel list, every category, and the EPG your provider offers.
@@ -30,9 +30,10 @@ The result is a small, opinionated client that treats a Fire TV Stick like a cin
 - **Custom player** — 10-foot overlay with title, LIVE badge, play/pause, ±10-second seeking, progress, and auto-hiding controls.
 - **Profiles** — a "Who's watching?" picker with one shared provider login. Each profile keeps its own My List, history, and recommendations.
 - **My List** — a dedicated grid screen; long-press OK on any card to add or remove a title.
-- **Search** — local search across the loaded live, VOD, and series catalogues.
+- **Search** — local search across the loaded live, VOD, and series catalogues, with an
+  optional online fallback for titles your provider does not carry.
 - **In-app updates** — checks `version.json` on launch, downloads the new APK and hands it to the system installer.
-- **Recommendations** — a small on-device hybrid of category affinity, stable novelty, and a diversity cap. Nothing leaves the device.
+- **Recommendations** — an optional self-hosted, content-based engine using per-profile viewing evidence and TMDB metadata, with provider and online source matching. Without a server, local discovery remains available. See the [shared API and setup](docs/recommendations-api.md).
 
 ## Screenshots
 
@@ -88,6 +89,29 @@ Marquee does not ship a provider or any credentials. On first launch, enter:
 
 These are stored only in the app's private `SharedPreferences` on the device. They are never bundled in the APK and never leave the device.
 
+## Optional: online sources
+
+Marquee ships with *your* provider's catalogue and nothing else. If you want search to
+also reach outside it — for a series your provider simply does not carry — there are
+two ways, both off the normal path and both under **Profiles → Online sources**:
+
+1. **A public fallback** that needs no setup and no server. It works out of the box
+   and depends on somebody else's uptime.
+2. **Your own resolver**: a small Node service in [`resolver/`](resolver/README.md)
+   that turns a title into a playable URL on demand, so a gap in the catalogue is not
+   a dead end. It is opt-in: enter the address in **Profiles → Server** and the app
+   prefers it; leave it blank and the app never calls it.
+
+```bash
+cd resolver && docker compose up -d --build
+curl -s http://localhost:8099/health
+```
+
+Run it on a machine on your **home network** — it must share the TV's public IP, and
+[`resolver/README.md`](resolver/README.md) explains why, along with deploy, tunnel and
+troubleshooting notes. Nothing about your setup is baked into the APK; the app has no
+default server.
+
 ## Build from source
 
 Requirements:
@@ -126,6 +150,7 @@ The signed APK is written to `firetv-player/app/build/outputs/apk/release/app-re
 ## How it is organised
 
 ```text
+resolver/                  Optional self-hosted stream resolver (Node + Chromium)
 firetv-player/
   app/src/main/
     java/com/orca/iptv/
@@ -153,8 +178,10 @@ The bundled JSON catalogues in `assets/` make the Home rails work offline and ke
 
 ## Privacy
 
-- Profiles, My List, history, and recommendations are stored locally in app-private preferences.
+- Profiles, My List and resume history are local. A separate SQLite watch ledger retains completed viewing for recommendations. With a configured server and online sources enabled, viewing evidence syncs to your own server; TMDB receives title metadata queries, not profile names or viewing durations.
 - There is no analytics, tracking, or telemetry.
+- Online sources are optional and off the normal path: with no server set, the app only uses
+  the built-in public fallback when a search finds nothing in your catalogue.
 - Live EPG and artwork are fetched from your provider and the URLs it returns.
 - Provider credentials are entered at runtime and stored on the device only.
 - On launch the app makes one request to this repository, for `version.json`, to see whether a newer build exists. It sends no identifiers and nothing about your usage; if the file is unreachable the check is skipped silently. See *Updates* below.
@@ -167,6 +194,16 @@ then offers the download. The APK is saved to the app cache, checked against `sh
 one is published, and handed to the Android TV installer — which always asks for
 confirmation. Nothing installs silently.
 
+Code merges into the default branch (`master`, or `main` if renamed) now run the
+release workflow: backend tests, signed APK build, then APK and SHA-256 manifest
+published together in a GitHub release. Future builds read the release's
+`version.json`; the root file remains a bootstrap for older installed versions.
+Each release increments `versionCode` and the patch version automatically, unless
+the prepared Gradle version is already newer. Documentation-only and bootstrap
+manifest changes do not publish another APK. A failed build leaves the previous
+release active. Signing material is stored in encrypted GitHub Actions secrets.
+Device playback/instrumentation checks remain separate from build verification.
+
 On Fire OS, allow it once: **Settings → My TV → Developer Options → Install unknown apps →
 Marquee → On**. An update must be signed with the same key as the installed build,
 otherwise Android rejects it.
@@ -178,6 +215,8 @@ otherwise Android rejects it.
 - Playback depends on your provider, network, and region; some channels may not play.
 - The bundled catalogue snapshots may not match your provider exactly.
 - Release builds are signed with a personal key, so updates must come from this repository.
+- Online search results come from a third party and are only as good as that source on the
+  day; old catalogue entries frequently go missing. See [`resolver/README.md`](resolver/README.md#troubleshooting).
 
 ## Credits
 

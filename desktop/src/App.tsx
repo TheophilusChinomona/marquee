@@ -19,6 +19,7 @@ import Browse from './features/Browse';
 import Connect from './features/Connect';
 import Details from './features/Details';
 import Home from './features/Home';
+import LiveGuide from './features/LiveGuide';
 import MyList from './features/MyList';
 import NativePlayer from './features/NativePlayer';
 import Player from './features/Player';
@@ -468,13 +469,20 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             onSettingsChanged={handleSettingsChanged}
             onNotify={notify}
           />
+        ) : page === 'Live TV' ? (
+          <LiveGuide
+            api={api}
+            refreshStamp={refreshStamp}
+            onPlayChannel={(channel) => handleStartPlayback(channel.ref, undefined, false)}
+            onNotify={notify}
+          />
         ) : (
           <section className="section-pad">
             <EmptyState
-              title="Live TV guide"
-              description="Browse channels and live schedules once connected."
-              action="Refresh library"
-              onAction={() => void triggerRefresh()}
+              title="Ready to watch"
+              description="Choose a section above to browse your library."
+              action="Go to Home"
+              onAction={() => go('Home')}
             />
           </section>
         )}

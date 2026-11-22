@@ -31,6 +31,28 @@ pub fn run() {
                 Box::new(credentials::OsCredentials),
             ));
 
+            // Guard against offscreen window geometry when monitor setups change.
+            if let Some(window) = app.get_webview_window("main") {
+                if let (Ok(pos), Ok(size), Ok(monitors)) = (
+                    window.outer_position(),
+                    window.outer_size(),
+                    window.available_monitors(),
+                ) {
+                    let intersects = monitors.iter().any(|m| {
+                        let mp = m.position();
+                        let ms = m.size();
+                        let wx2 = pos.x + size.width as i32;
+                        let wy2 = pos.y + size.height as i32;
+                        let mx2 = mp.x + ms.width as i32;
+                        let my2 = mp.y + ms.height as i32;
+                        pos.x < mx2 && wx2 > mp.x && pos.y < my2 && wy2 > mp.y
+                    });
+                    if !monitors.is_empty() && !intersects {
+                        let _ = window.center();
+                    }
+                }
+            }
+
             #[cfg(debug_assertions)]
             if let Some(source) = std::env::var_os("MARQUEE_PLAYER_SMOKE") {
                 let window = app

@@ -14,6 +14,9 @@ import androidx.core.widget.NestedScrollView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -32,6 +35,11 @@ class HomeActivity : AppCompatActivity() {
     private var myListRail: MarqueeRailView? = null
     private var catalogReady = false
     private var requestedTab: String? = null
+    private var recommendationJob: Job? = null
+    private var recommendationHost: LinearLayout? = null
+    private var recommendationPage: RecommendationPage? = null
+    private var recommendationProfile = ""
+    private var screenVisible = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,8 +62,9 @@ class HomeActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        screenVisible = true
         if (::nav.isInitialized) nav.refreshProfile()
-        if (catalogReady) render()
+        if (catalogReady) { render(); refreshRecommendations() }
         UpdatePrompt.refocus()
     }
 
@@ -128,6 +137,7 @@ class HomeActivity : AppCompatActivity() {
                 withContext(Dispatchers.IO) { Catalog.ensureHome(applicationContext) }
                 catalogReady = true
                 render()
+                refreshRecommendations()
             } catch (error: Exception) {
                 status.text = "Could not load catalog: ${error.message}"
                 status.visibility = View.VISIBLE
@@ -146,6 +156,10 @@ class HomeActivity : AppCompatActivity() {
         val profileName = ProfileStore.active(this).name
         val history = HistoryStore.all(this, profileId)
         val favorites = FavoriteStore.all(this, profileId)
+        if (recommendationProfile != profileId) {
+            recommendationProfile = profileId
+        }
+        recommendationPage = RecommendationClient(this).cached(profileId)
 
         val featured = Catalog.vodSections.firstOrNull()?.items?.firstOrNull()
             ?: Catalog.seriesSections.firstOrNull()?.items?.firstOrNull()
@@ -213,25 +227,13 @@ class HomeActivity : AppCompatActivity() {
         addRail("Live Now", "On now", liveCards, MarqueeCardKind.LIVE)
 
         val forYou = Recommendations.forYou(this, profileId)
-        addRail(
-            "For You",
-            "Picked for $profileName",
-            forYou.map { MarqueeCardItem(it.item, it.mode) },
-            MarqueeCardKind.POSTER
-        )
-
-        Recommendations.becauseYouWatched(this, profileId)?.let { (title, list) ->
-            addRail(
-                "Because you watched $title",
-                "Same shelf, different night",
-                list.map { MarqueeCardItem(it.item, it.mode) },
-                MarqueeCardKind.LANDSCAPE
-            )
-        }
+        recommendationHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(recommendationHost)
+        renderRecommendations(profileName, forYou.map { MarqueeCardItem(it.item, it.mode) })
 
         addRail(
-            "Top 10 at home today",
-            "Updated for $profileName",
+            "Explore your library",
+            "More to discover",
             forYou.take(10).mapIndexed { index, rec ->
                 MarqueeCardItem(
                     item = rec.item,
@@ -278,7 +280,8 @@ class HomeActivity : AppCompatActivity() {
         title: String,
         subtitle: String?,
         cards: List<MarqueeCardItem>,
-        kind: MarqueeCardKind
+        kind: MarqueeCardKind,
+        parent: LinearLayout = content
     ): MarqueeRailView? {
         if (cards.isEmpty()) return null
         val rail = MarqueeRailView(
@@ -290,7 +293,7 @@ class HomeActivity : AppCompatActivity() {
             onItem = { openCard(it) },
             onLongItem = { toggleFavorite(it) }
         )
-        content.addView(rail, LinearLayout.LayoutParams(
+        parent.addView(rail, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ))
@@ -312,6 +315,11 @@ class HomeActivity : AppCompatActivity() {
     }
 
     private fun playVod(item: Catalog.Item, startPositionMs: Long = 0L) {
+        // An online title has no standing URL; its detail page mints one on Play.
+        if (Online.isOnline(item.id)) {
+            openDetails(item)
+            return
+        }
         startActivity(
             PlayerActivity.intent(
                 this,
@@ -349,6 +357,60 @@ class HomeActivity : AppCompatActivity() {
             }
             if (info != null && hero === view) view.bind(item, info, MODE_VOD)
         }
+    }
+
+    private fun renderRecommendations(profileName: String, fallback: List<MarqueeCardItem>? = null) {
+        val host = recommendationHost ?: return
+        host.removeAllViews()
+        val cards = recommendationPage?.cards.orEmpty().filter { Prefs.onlineEnabled(this) || !Online.isOnline(it.item.id) }
+        if (cards.isNotEmpty()) {
+            addRail("For $profileName", "Based on what you watched", cards.take(20), MarqueeCardKind.POSTER, host)
+        } else {
+            val discovery = fallback ?: Recommendations.forYou(this, ProfileStore.activeId(this)).map { MarqueeCardItem(it.item, it.mode) }
+            addRail("Discover", when (recommendationPage?.state) {
+                "pending", "refreshing" -> "Finding matches for your viewing"
+                "cold_start" -> "Watch a few titles to personalise your picks"
+                else -> "Explore your library"
+            }, discovery, MarqueeCardKind.POSTER, host)
+        }
+        host.addView(MarqueeUi.text(this, "Metadata credits", 12f, MarqueeUi.SAND, MarqueeUi.body()).apply { setPadding(dp(48), dp(4), dp(48), dp(4)) })
+        host.addView(android.widget.ImageView(this).apply {
+            setImageResource(R.drawable.tmdb_logo)
+            contentDescription = "The Movie Database"
+            scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+        }, LinearLayout.LayoutParams(dp(92), dp(12)).apply { marginStart = dp(48) })
+        host.addView(MarqueeUi.text(this, "This product uses the TMDB API but is not endorsed or certified by TMDB.", 11f, MarqueeUi.SAND, MarqueeUi.body()).apply {
+            setPadding(dp(48), dp(4), dp(48), dp(4))
+        })
+    }
+
+    private fun refreshRecommendations() {
+        recommendationJob?.cancel()
+        if (!screenVisible || !Prefs.onlineEnabled(this) || Prefs.resolverBase(this).isBlank()) return
+        val profile = ProfileStore.activeId(this)
+        recommendationJob = scope.launch {
+            val api = RecommendationClient(applicationContext)
+            val budget = RecommendationBudget()
+            repeat(10) {
+                val result = try { withContext(Dispatchers.IO) { api.refresh(profile, budget) } }
+                    catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                    catch (_: Exception) { return@launch }
+                if (!isActive || !screenVisible || ProfileStore.activeId(this@HomeActivity) != profile) return@launch
+                // A cold/reset profile clears stale cards; a pending refresh keeps its last page.
+                if (result.cards.isNotEmpty() || result.state in listOf("cold_start", "reset", "ready")) {
+                    recommendationPage = result
+                    renderRecommendations(ProfileStore.active(this@HomeActivity).name)
+                }
+                if (result.state !in listOf("pending", "refreshing", "reset") || budget.remaining <= 0) return@launch
+                delay(result.retryAfterS.coerceAtLeast(15) * 1000)
+            }
+        }
+    }
+
+    override fun onStop() {
+        screenVisible = false
+        recommendationJob?.cancel()
+        super.onStop()
     }
 
     private fun onNav(tab: String) {

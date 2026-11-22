@@ -15,8 +15,10 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -39,6 +41,10 @@ class SearchActivity : AppCompatActivity() {
     private var catalogReady = false
     private var refreshing = false
     private var renderToken = 0
+    private var lastSections: List<Pair<String, List<SearchResult>>> = emptyList()
+    private var onlineHits: List<SearchResult> = emptyList()
+    private var onlinePending = false
+    private var onlineJob: Job? = null
     @Volatile
     private var index: SearchIndex? = null
     private var favoriteKeys: Set<String> = emptySet()
@@ -323,6 +329,12 @@ class SearchActivity : AppCompatActivity() {
     }
 
     private fun renderTrending() {
+        // A pending online search belongs to the old query; drop it with the query.
+        renderToken++
+        onlineJob?.cancel()
+        onlinePending = false
+        onlineHits = emptyList()
+        lastSections = emptyList()
         header.text = "Trending at home"
         status.text = "Type to search live TV, movies and series"
         renderRecents()
@@ -337,11 +349,25 @@ class SearchActivity : AppCompatActivity() {
 
     private fun showSections(text: String, sections: List<Pair<String, List<SearchResult>>>) {
         recentRow.visibility = View.GONE
+        lastSections = sections
+        onlineHits = emptyList()
+        renderRows(text)
+        searchOnline(text, sections)
+    }
+
+    private fun renderRows(text: String) {
         header.text = "Results for “$text”"
+        val sections = if (onlineHits.isEmpty()) {
+            lastSections
+        } else {
+            lastSections + (ONLINE_SECTION to onlineHits)
+        }
         val total = sections.sumOf { it.second.size }
         status.text = when {
-            total == 0 -> "No matches. Try a shorter title, or a channel name."
-            else -> "$total ${if (total == 1) "result" else "results"}"
+            total > 0 -> "$total ${if (total == 1) "result" else "results"}" +
+                if (onlineHits.isNotEmpty()) "  ·  online" else ""
+            onlinePending -> "Nothing at home. Searching online…"
+            else -> "No matches. Try a shorter title, or a channel name."
         }
         adapter.submit(
             sections.flatMap { (title, results) ->
@@ -353,6 +379,42 @@ class SearchActivity : AppCompatActivity() {
                 }
             }
         )
+    }
+
+    /**
+     * The online fallback only runs when the provider catalogue has nothing for
+     * movies or series: it is a third-party scrape, so it is kept off the path of
+     * every ordinary search and only fires once typing settles.
+     */
+    private fun searchOnline(text: String, sections: List<Pair<String, List<SearchResult>>>) {
+        onlineJob?.cancel()
+        onlineHits = emptyList()
+        onlinePending = false
+        if (!Prefs.onlineEnabled(this) || text.length < 3) return
+
+        val localTitles = sections
+            .filter { it.first == "Movies" || it.first == "Series" }
+            .sumOf { it.second.size }
+        if (localTitles > 0) return
+
+        val token = renderToken
+        onlinePending = true
+        renderRows(text)
+        onlineJob = scope.launch {
+            delay(450)
+            val hits = withContext(Dispatchers.IO) {
+                runCatching { Online.search(this@SearchActivity, text) }.getOrDefault(emptyList())
+            }
+            if (isFinishing || token != renderToken) return@launch
+            onlinePending = false
+            onlineHits = hits.map { hit ->
+                SearchResult(
+                    Catalog.Item(hit.id, hit.name, ONLINE_CATEGORY, hit.poster, "hls"),
+                    hit.mode
+                )
+            }
+            renderRows(text)
+        }
     }
 
     /** One read per render, not one per result. */
@@ -538,6 +600,24 @@ class SearchActivity : AppCompatActivity() {
 
     private fun open(result: SearchResult) {
         Prefs.addRecent(this, query)
+        if (Online.isOnline(result.item.id)) {
+            if (result.mode == MODE_SERIES) {
+                startActivity(SeriesActivity.intent(this, result.item.id, result.item.name))
+            } else {
+                startActivity(
+                    DetailActivity.intent(
+                        this,
+                        result.item.id,
+                        result.item.name,
+                        result.item.icon,
+                        "hls",
+                        MODE_VOD,
+                        ONLINE_CATEGORY
+                    )
+                )
+            }
+            return
+        }
         when (result.mode) {
             MODE_LIVE -> startActivity(
                 PlayerActivity.intent(this, client.liveUrl(result.item.id), result.item.name)
@@ -568,6 +648,8 @@ class SearchActivity : AppCompatActivity() {
 
     companion object {
         private const val LIMIT = 40
+        private const val ONLINE_SECTION = "More sources · online"
+        private const val ONLINE_CATEGORY = "online"
         private val MARKS = Regex("\\p{Mn}+")
 
         fun intent(context: Context) = Intent(context, SearchActivity::class.java)

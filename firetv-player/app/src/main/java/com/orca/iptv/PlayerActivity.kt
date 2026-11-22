@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -40,8 +41,16 @@ class PlayerActivity : AppCompatActivity() {
     private val episodes = ArrayList<QueuedEpisode>()
     private var episodeIndex = -1
     private var advancing = false
+    private var resolving = false
     private var startPositionMs = 0L
     private var isLive = false
+    private lateinit var viewingProfile: String
+    private val viewingSession = java.util.UUID.randomUUID().toString()
+    private var actualPlayedMs = 0L
+    private var playingSinceMs = 0L
+    private lateinit var watchLedger: WatchLedger
+    private var viewingEpoch = 0
+    private var viewingYear = 0
 
     private lateinit var overlay: FrameLayout
     private lateinit var playPause: TextView
@@ -76,6 +85,9 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewingProfile = ProfileStore.activeId(this)
+        watchLedger = WatchLedger(applicationContext)
+        viewingEpoch = watchLedger.epoch(viewingProfile)
         setContentView(R.layout.activity_player)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
@@ -86,6 +98,7 @@ class PlayerActivity : AppCompatActivity() {
         // Strip provider decorations ("[MULTI-SUB]", "- 2025") so the overlay
         // and the watch history show the title the rails already show.
         val rawName = intent.getStringExtra(EXTRA_NAME).orEmpty()
+        viewingYear = ProviderTitleIndex.yearOf(rawName)
         title = Catalog.displayName(rawName).ifBlank { rawName }
         itemId = intent.getStringExtra(EXTRA_ID).orEmpty()
         itemMode = intent.getIntExtra(EXTRA_MODE, -1)
@@ -117,6 +130,8 @@ class PlayerActivity : AppCompatActivity() {
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
+                accountPlayingTime()
+                playingSinceMs = if (playing) SystemClock.elapsedRealtime() else 0L
                 updatePlayPause()
             }
 
@@ -359,12 +374,20 @@ class PlayerActivity : AppCompatActivity() {
     private fun playEpisodeAt(index: Int) {
         if (advancing) return
         val target = episodes.getOrNull(index) ?: return
+        if (target.url.isBlank() && target.fx.isNotBlank()) {
+            resolveAndPlay(index, target)
+            return
+        }
         advancing = true
         saveProgress()
+        startEpisode(index, target.url)
+    }
+
+    private fun startEpisode(index: Int, url: String) {
         startActivity(
-            intent(
+            PlayerActivity.intent(
                 this,
-                target.url,
+                url,
                 title?.toString().orEmpty(),
                 id = itemId,
                 mode = itemMode,
@@ -372,13 +395,43 @@ class PlayerActivity : AppCompatActivity() {
                 categoryId = itemCategory,
                 ext = itemExt,
                 seriesId = seriesId,
-                episode = target.title,
-                episodeId = target.id,
+                episode = episodes.getOrNull(index)?.title.orEmpty(),
+                episodeId = episodes.getOrNull(index)?.id.orEmpty(),
                 episodesJson = QueuedEpisode.toJson(episodes),
                 episodeIndex = index
             )
         )
         finish()
+    }
+
+    /**
+     * Online episodes carry coordinates instead of a link, because their streams are
+     * minted per request. Resolving one takes a few seconds, so it happens here on a
+     * worker thread with the current episode still playing behind it.
+     */
+    private fun resolveAndPlay(index: Int, target: QueuedEpisode) {
+        if (resolving) return
+        resolving = true
+        Toast.makeText(this, "Finding episode…", Toast.LENGTH_SHORT).show()
+        Thread {
+            val playback = runCatching { Online.resolveSpec(this@PlayerActivity, target.fx) }.getOrNull()
+            runOnUiThread {
+                resolving = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (playback == null) {
+                    Toast.makeText(
+                        this,
+                        "No working stream for that episode",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@runOnUiThread
+                }
+                episodes[index] = target.copy(url = playback.url, fx = "")
+                advancing = true
+                saveProgress()
+                startEpisode(index, playback.url)
+            }
+        }.start()
     }
 
     private fun toggleEpisodePanel() {
@@ -686,7 +739,9 @@ class PlayerActivity : AppCompatActivity() {
         val url: String,
         val title: String,
         val season: Int,
-        val number: Int
+        val number: Int,
+        /** Set when [url] is blank: "fx:tv:1396|1|2", resolved on demand. */
+        val fx: String = ""
     ) {
         companion object {
             fun parse(raw: String?): List<QueuedEpisode> {
@@ -697,14 +752,16 @@ class PlayerActivity : AppCompatActivity() {
                     for (i in 0 until array.length()) {
                         val o = array.optJSONObject(i) ?: continue
                         val url = o.optString("url")
-                        if (url.isBlank()) continue
+                        val fx = o.optString("fx")
+                        if (url.isBlank() && fx.isBlank()) continue
                         out.add(
                             QueuedEpisode(
                                 id = o.optString("id"),
                                 url = url,
                                 title = o.optString("title"),
                                 season = o.optInt("season"),
-                                number = o.optInt("number")
+                                number = o.optInt("number"),
+                                fx = fx
                             )
                         )
                     }
@@ -719,6 +776,7 @@ class PlayerActivity : AppCompatActivity() {
                         org.json.JSONObject()
                             .put("id", item.id)
                             .put("url", item.url)
+                            .put("fx", item.fx)
                             .put("title", item.title)
                             .put("season", item.season)
                             .put("number", item.number)
@@ -752,10 +810,16 @@ class PlayerActivity : AppCompatActivity() {
         if (itemId.isBlank() || itemMode < 0) return
         val duration = exo.duration
         val position = exo.currentPosition
+        accountPlayingTime()
+        if (!isLive && itemId.isNotBlank() && actualPlayedMs > 0L) {
+            watchLedger.record(viewingProfile, viewingSession, title?.toString().orEmpty(),
+                seriesId.ifBlank { itemId }, if (itemMode == MODE_SERIES) "tv" else "movie", actualPlayedMs, duration.coerceAtLeast(0),
+                year = viewingYear, expectedEpoch = viewingEpoch)
+        }
         if (duration <= 0L || position <= 0L) return
         HistoryStore.record(
             context = this,
-            profileId = ProfileStore.activeId(this),
+            profileId = viewingProfile,
             itemId = itemId,
             name = title?.toString().orEmpty(),
             icon = itemIcon,
@@ -770,11 +834,20 @@ class PlayerActivity : AppCompatActivity() {
         )
     }
 
+    private fun accountPlayingTime() {
+        if (playingSinceMs != 0L) {
+            val now = SystemClock.elapsedRealtime()
+            actualPlayedMs += (now - playingSinceMs).coerceAtLeast(0)
+            playingSinceMs = now
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         saveProgress()
         player?.release()
         player = null
+        if (::watchLedger.isInitialized) watchLedger.close()
         super.onDestroy()
     }
 

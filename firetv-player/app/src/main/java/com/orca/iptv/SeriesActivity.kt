@@ -323,14 +323,22 @@ class SeriesActivity : AppCompatActivity() {
         status.text = ""
         scope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { client.seriesDetails(seriesId) }
+                runCatching {
+                    if (Online.isOnline(seriesId)) Online.seriesDetails(this@SeriesActivity, seriesId)
+                    else client.seriesDetails(seriesId)
+                }
             }
             progress.visibility = View.GONE
-            result.onFailure {
-                status.text = "Could not load series: ${it.message}"
+            val data = result.getOrNull()
+            if (data == null) {
+                val error = result.exceptionOrNull()
+                status.text = if (error != null) {
+                    "Could not load series: ${error.message}"
+                } else {
+                    "Nothing playable for this series right now."
+                }
                 return@launch
             }
-            val data = result.getOrThrow()
             details = data
             refreshResumeEntry()
             bindHero(data)
@@ -390,7 +398,34 @@ class SeriesActivity : AppCompatActivity() {
         selectedSeason = index
         val season = data.seasons[index]
         seasonButton.text = "Season ${season.number}  ▾"
+        if (season.episodes.isEmpty() && Online.isOnline(seriesId)) {
+            loadSeason(season.number, focusEpisodes, focusLabel)
+            return
+        }
         renderEpisodes(season, focusEpisodes, focusLabel)
+    }
+
+    /**
+     * The online source lists seasons with their episode counts but no episodes, so
+     * a show is one request to open and one more per season actually visited.
+     */
+    private fun loadSeason(number: Int, focusEpisodes: Boolean, focusLabel: String?) {
+        status.text = "Loading episodes…"
+        episodeAdapter.submit(emptyList(), details?.poster.orEmpty())
+        scope.launch {
+            val episodes = withContext(Dispatchers.IO) {
+                runCatching { Online.seasonEpisodes(this@SeriesActivity, seriesId, number) }.getOrDefault(emptyList())
+            }
+            if (isFinishing) return@launch
+            val data = details ?: return@launch
+            if (selectedSeason !in data.seasons.indices) return@launch
+            val seasons = data.seasons.map { season ->
+                if (season.number == number) season.copy(episodes = episodes) else season
+            }
+            details = data.copy(seasons = seasons)
+            status.text = if (episodes.isEmpty()) "No episodes for this season." else ""
+            renderEpisodes(seasons[selectedSeason], focusEpisodes, focusLabel)
+        }
     }
 
     private fun renderEpisodes(
@@ -558,6 +593,10 @@ class SeriesActivity : AppCompatActivity() {
                         entry.matchesEpisode(episode.id, cleanTitle(episode))
                 }?.positionMs ?: 0L
         }
+        if (Online.isOnline(seriesId)) {
+            playOnline(episode, position)
+            return
+        }
         startActivity(
             PlayerActivity.intent(
                 this,
@@ -576,6 +615,48 @@ class SeriesActivity : AppCompatActivity() {
                 startPositionMs = position
             )
         )
+    }
+
+    /**
+     * An online stream is resolved per play, because the servers hand out signed
+     * URLs that expire; resolving a whole series up front would take minutes.
+     */
+    private fun playOnline(episode: XtreamClient.EpisodeDetails, startPositionMs: Long) {
+        val data = details
+        status.text = "Finding a stream…"
+        progress.visibility = View.VISIBLE
+        playButton.isEnabled = false
+        scope.launch {
+            val playback = withContext(Dispatchers.IO) {
+                runCatching { Online.resolve(this@SeriesActivity, seriesId, episode.season, episode.number) }.getOrNull()
+            }
+            progress.visibility = View.GONE
+            playButton.isEnabled = true
+            if (isFinishing) return@launch
+            if (playback == null) {
+                status.text = "No working stream for this episode right now."
+                return@launch
+            }
+            status.text = ""
+            startActivity(
+                PlayerActivity.intent(
+                    this@SeriesActivity,
+                    playback.url,
+                    data?.name?.takeIf { it.isNotBlank() } ?: fallbackName.ifBlank { "Series" },
+                    id = seriesId,
+                    mode = MODE_SERIES,
+                    icon = data?.poster.orEmpty(),
+                    categoryId = "",
+                    ext = playback.container,
+                    seriesId = seriesId,
+                    episode = cleanTitle(episode),
+                    episodeId = episode.id,
+                    episodesJson = episodeListJson(),
+                    episodeIndex = episodeIndex(episode),
+                    startPositionMs = startPositionMs
+                )
+            )
+        }
     }
 
     private fun cleanTitle(episode: XtreamClient.EpisodeDetails): String {
@@ -603,12 +684,16 @@ class SeriesActivity : AppCompatActivity() {
         val flat = flatEpisodes()
         if (flat.isEmpty()) return ""
 
+        // Provider ids play through a fixed URL; online ones carry the coordinates
+        // instead and the player resolves them the moment they are needed.
+        val online = Online.isOnline(seriesId)
         val array = org.json.JSONArray()
         flat.forEach { item ->
             array.put(
                 org.json.JSONObject()
                     .put("id", item.id)
-                    .put("url", client.seriesUrl(item.id, item.ext))
+                    .put("url", if (online) "" else client.seriesUrl(item.id, item.ext))
+                    .put("fx", Online.episodeSpec(seriesId, item.season, item.number))
                     .put("title", cleanTitle(item))
                     .put("season", item.season)
                     .put("number", item.number)

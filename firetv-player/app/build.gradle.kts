@@ -21,9 +21,12 @@ android {
         applicationId = "com.orca.iptv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.8"
+        versionCode = 17
+        versionName = "1.15"
+        testInstrumentationRunner = "com.orca.iptv.ImageLoaderMemoryTest"
     }
+
+    testBuildType = "release"
 
     signingConfigs {
         create("release") {

@@ -1,28 +1,13 @@
+mod commands;
+mod credentials;
 mod models;
 mod player;
-use player::service::{PlayerCommand, PlayerService, PlayerSnapshot};
+mod provider;
+mod state;
+mod store;
+
+use player::service::PlayerService;
 use tauri::Manager;
-#[tauri::command]
-fn app_bootstrap(player: tauri::State<'_, PlayerService>) -> models::Bootstrap {
-    let mut state = models::Bootstrap::disconnected();
-    state.development_player = cfg!(debug_assertions) && player.active();
-    state
-}
-
-#[tauri::command]
-async fn player_snapshot(
-    player: tauri::State<'_, PlayerService>,
-) -> Result<PlayerSnapshot, models::AppError> {
-    player.snapshot()
-}
-
-#[tauri::command]
-async fn player_control(
-    command: PlayerCommand,
-    player: tauri::State<'_, PlayerService>,
-) -> Result<(), models::AppError> {
-    player.control(command)
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,6 +16,16 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("unable to resolve app data directory: {e}"))?;
+            let db_path = data_dir.join("marquee.sqlite");
+            app.manage(state::AppState::new(
+                db_path,
+                Box::new(credentials::OsCredentials),
+            ));
+
             #[cfg(debug_assertions)]
             if let Some(source) = std::env::var_os("MARQUEE_PLAYER_SMOKE") {
                 let window = app
@@ -73,9 +68,20 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            app_bootstrap,
-            player_snapshot,
-            player_control
+            commands::app_bootstrap,
+            commands::provider_connect,
+            commands::provider_disconnect,
+            commands::profiles_list,
+            commands::profile_create,
+            commands::profile_update,
+            commands::profile_remove,
+            commands::profile_activate,
+            commands::favorites_list,
+            commands::favorite_set,
+            commands::history_list,
+            commands::settings_update,
+            commands::player_snapshot,
+            commands::player_control
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

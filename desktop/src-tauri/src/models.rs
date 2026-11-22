@@ -11,6 +11,24 @@ mod tests {
 }
 use serde::Serialize;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppError {
+    pub code: &'static str,
+    pub message: String,
+    pub retryable: bool,
+}
+
+impl AppError {
+    pub fn player(message: &str) -> Self {
+        Self {
+            code: "player",
+            message: message.into(),
+            retryable: true,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Profile {
@@ -22,6 +40,7 @@ pub struct Profile {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    pub development_player: bool,
     pub connected: bool,
     pub profiles: Vec<Profile>,
     pub active_profile_id: Option<String>,
@@ -31,6 +50,7 @@ pub struct Bootstrap {
 impl Bootstrap {
     pub fn disconnected() -> Self {
         Self {
+            development_player: false,
             connected: false,
             profiles: vec![],
             active_profile_id: None,

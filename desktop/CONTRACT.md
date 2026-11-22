@@ -14,4 +14,6 @@ Media identity is `(providerId, kind, id)`; profile activity additionally includ
 
 ## Playback feasibility
 
-Not yet proven. Windows and Linux rendering, resource loading, control layering, focus, DPI and shutdown require real playback evidence. Linux X11/Wayland gates remain unverified while this host has no Linux environment.
+Windows native child-surface playback has been observed with mpv 0.42.0; see `VALIDATION.md`. React controls occupy a reserved header/footer around the native video rectangle, with resize/fullscreen handled on the UI thread. Final overlay composition remains open. Linux X11/Wayland gates remain unverified while this host has no Linux environment.
+
+The maintained `libmpv2` 7.0.1 binding was evaluated. It links `libmpv2-sys` at build/load time, so it cannot provide our required recoverable missing-runtime path without additional delay loading. The current adapter uses `libloading` with only the published client ABI needed for lifecycle, typed commands, properties and events. Runtime handles are owned; initialization failure drops the handle and library. Internal native commands are not an IPC escape hatch: the frontend can only send the `PlayerCommand` enum.

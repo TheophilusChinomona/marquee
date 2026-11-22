@@ -14,4 +14,4 @@ Explore Home, Movies, Series, title details, episodes, Live TV guide, My List, S
 
 Review screenshots are in `design-review/`. Sample film and television artwork is served locally for design review; artwork belongs to its respective owners and was sourced from The Movie Database. It is not a production catalogue.
 
-The broader desktop design and implementation plan are in `../docs/superpowers/`. Backend work is paused while the screens are reviewed.
+The desktop UI is approved. The next steps are in the [Tauri implementation plan](../docs/superpowers/plans/2026-11-22-marquee-tauri-implementation.md), covering native playback, provider access, persistence, screen integration, and Windows/Linux packaging. Backend implementation has not started.

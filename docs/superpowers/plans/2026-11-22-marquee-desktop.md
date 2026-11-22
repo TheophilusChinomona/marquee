@@ -1,5 +1,7 @@
 # Marquee Desktop Implementation Plan
 
+> Superseded after UI approval by [Marquee Tauri Implementation Plan](2026-11-22-marquee-tauri-implementation.md). Keep this earlier outline for context; execute the newer plan against the approved preview.
+
 > **For agentic workers:** Use superpowers:subagent-driven-development or superpowers:executing-plans. Track progress with checkboxes and the plan ledger.
 
 **Goal:** Implement the full Marquee desktop experience in `desktop/`, with a native embedded player and Windows/Linux build support.

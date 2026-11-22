@@ -20,3 +20,6 @@ screenshots/player-live.png
 screenshots/player-vod.png
 screenshots/profiles.png
 screenshots/icon-512.png
+
+.superpowers/
+desktop/src-tauri/resources/mpv/

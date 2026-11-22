@@ -1,3 +1,4 @@
+mod catalog;
 mod commands;
 mod credentials;
 mod models;
@@ -6,6 +7,7 @@ mod provider;
 mod state;
 mod store;
 
+use catalog::CatalogService;
 use player::service::PlayerService;
 use tauri::Manager;
 
@@ -13,6 +15,7 @@ use tauri::Manager;
 pub fn run() {
     tauri::Builder::default()
         .manage(PlayerService::default())
+        .manage(CatalogService::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
@@ -62,6 +65,7 @@ pub fn run() {
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
+                window.state::<CatalogService>().cancel_active_refresh();
                 if let Ok(mut player) = window.state::<PlayerService>().0.lock() {
                     player.take();
                 }
@@ -80,6 +84,12 @@ pub fn run() {
             commands::favorite_set,
             commands::history_list,
             commands::settings_update,
+            commands::catalog_query,
+            commands::catalog_categories,
+            commands::catalog_refresh,
+            commands::catalog_refresh_cancel,
+            commands::media_details,
+            commands::epg_query,
             commands::player_snapshot,
             commands::player_control
         ])

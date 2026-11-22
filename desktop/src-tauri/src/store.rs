@@ -1,4 +1,8 @@
-use crate::models::{AppError, AppSettings, CacheStatus, HistoryItem, MediaItem, MediaKind, MediaRef, Page, Profile};
+use crate::models::{
+    AppError, AppSettings, CacheStatus, Category, HistoryItem, MediaItem, MediaKind, MediaRef,
+    Page, Profile,
+};
+use crate::provider::{ParsedCatalogItem, ParsedCategory, normalize_search_name};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use std::path::Path;
@@ -688,6 +692,496 @@ impl Store {
                 row_to_media_item,
             )
             .optional()
+            .map_err(storage_error)
+    }
+
+    pub fn get_item(&self, provider: &str, kind: MediaKind, id: &str) -> Result<Option<(MediaItem, Option<String>)>> {
+        let (generation, _) = self.provider_generation(provider)?;
+        let Some(generation) = generation else {
+            return Ok(None);
+        };
+        self.connection
+            .query_row(
+                "SELECT c.kind, c.id, c.name, c.category_id, cat.name, c.poster, c.backdrop, c.year, c.rating, c.extension, c.added, c.details
+                 FROM catalogue_items c
+                 LEFT JOIN categories cat
+                   ON cat.provider_id = c.provider_id
+                  AND cat.generation = c.generation
+                  AND cat.kind = c.kind
+                  AND cat.id = c.category_id
+                 WHERE c.provider_id=?1 AND c.generation=?2 AND c.kind=?3 AND c.id=?4",
+                params![provider, generation, kind.as_str(), id],
+                |r| Ok((row_to_media_item(r)?, r.get::<_, Option<String>>(11)?)),
+            )
+            .optional()
+            .map_err(storage_error)
+    }
+
+    pub fn save_item_details(
+        &self,
+        provider: &str,
+        kind: MediaKind,
+        id: &str,
+        details_json: &str,
+    ) -> Result<()> {
+        let (generation, _) = self.provider_generation(provider)?;
+        let Some(generation) = generation else {
+            return Ok(());
+        };
+        self.connection
+            .execute(
+                "UPDATE catalogue_items SET details=?5
+                 WHERE provider_id=?1 AND generation=?2 AND kind=?3 AND id=?4",
+                params![provider, generation, kind.as_str(), id, details_json],
+            )
+            .map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn begin_refresh_run(&self, refresh_id: &str, provider_id: &str) -> Result<()> {
+        self.connection
+            .execute(
+                "INSERT INTO refresh_runs(id, provider_id, started_at, status) VALUES(?1,?2,?3,'running')",
+                params![refresh_id, provider_id, now_ms()],
+            )
+            .map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn stage_categories(
+        &mut self,
+        provider_id: &str,
+        generation: &str,
+        kind: MediaKind,
+        categories: &[ParsedCategory],
+    ) -> Result<()> {
+        let tx = self.connection.transaction().map_err(storage_error)?;
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO categories(provider_id, generation, kind, id, name)
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                )
+                .map_err(storage_error)?;
+            for cat in categories {
+                stmt.execute(params![
+                    provider_id,
+                    generation,
+                    kind.as_str(),
+                    cat.id,
+                    cat.name
+                ])
+                .map_err(storage_error)?;
+            }
+        }
+        tx.commit().map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn stage_items(
+        &mut self,
+        provider_id: &str,
+        generation: &str,
+        items: &[ParsedCatalogItem],
+    ) -> Result<()> {
+        let tx = self.connection.transaction().map_err(storage_error)?;
+        {
+            let mut stmt = tx
+                .prepare_cached(
+                    "INSERT OR REPLACE INTO catalogue_items(
+                        provider_id, generation, kind, id, name, normalized_name, category_id,
+                        poster, backdrop, year, rating, extension, added
+                     ) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                )
+                .map_err(storage_error)?;
+            for item in items {
+                stmt.execute(params![
+                    provider_id,
+                    generation,
+                    item.kind.as_str(),
+                    item.id,
+                    item.name,
+                    item.normalized_name,
+                    item.category_id,
+                    item.poster,
+                    item.backdrop,
+                    item.year,
+                    item.rating,
+                    item.extension,
+                    item.added
+                ])
+                .map_err(storage_error)?;
+            }
+        }
+        tx.commit().map_err(storage_error)?;
+        Ok(())
+    }
+
+    /// Atomically publishes a staged generation and removes superseded generations.
+    pub fn publish_generation(
+        &mut self,
+        provider_id: &str,
+        generation: &str,
+        refresh_id: &str,
+    ) -> Result<()> {
+        let tx = self.connection.transaction().map_err(storage_error)?;
+        let active: Option<String> = tx
+            .query_row(
+                "SELECT value FROM preferences WHERE key='active_provider'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        if active.as_deref() != Some(provider_id) {
+            // Provider changed mid-refresh: discard staged rows without modifying active state.
+            tx.execute(
+                "DELETE FROM catalogue_items WHERE provider_id=?1 AND generation=?2",
+                params![provider_id, generation],
+            )
+            .map_err(storage_error)?;
+            tx.execute(
+                "DELETE FROM categories WHERE provider_id=?1 AND generation=?2",
+                params![provider_id, generation],
+            )
+            .map_err(storage_error)?;
+            tx.execute(
+                "UPDATE refresh_runs SET status='cancelled' WHERE id=?1",
+                [refresh_id],
+            )
+            .map_err(storage_error)?;
+            tx.commit().map_err(storage_error)?;
+            return Err(AppError::provider(
+                "Provider changed before refresh finished.",
+                false,
+            ));
+        }
+
+        // Preserve previously cached details JSON for matching items when re-refreshing.
+        let prev_generation: Option<String> = tx
+            .query_row(
+                "SELECT active_generation FROM providers WHERE id=?1",
+                [provider_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .flatten();
+
+        if let Some(prev) = prev_generation.as_deref() {
+            if prev != generation {
+                tx.execute(
+                    "UPDATE catalogue_items
+                     SET details = (
+                         SELECT old.details FROM catalogue_items old
+                         WHERE old.provider_id = catalogue_items.provider_id
+                           AND old.generation = ?3
+                           AND old.kind = catalogue_items.kind
+                           AND old.id = catalogue_items.id
+                           AND old.details IS NOT NULL
+                     )
+                     WHERE provider_id = ?1 AND generation = ?2 AND details IS NULL",
+                    params![provider_id, generation, prev],
+                )
+                .map_err(storage_error)?;
+            }
+        }
+
+        tx.execute(
+            "UPDATE providers SET active_generation=?2, refreshed_at=?3 WHERE id=?1",
+            params![provider_id, generation, now_ms()],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "DELETE FROM catalogue_items WHERE provider_id=?1 AND generation!=?2",
+            params![provider_id, generation],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "DELETE FROM categories WHERE provider_id=?1 AND generation!=?2",
+            params![provider_id, generation],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "UPDATE refresh_runs SET status='completed' WHERE id=?1",
+            [refresh_id],
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn discard_generation(
+        &mut self,
+        provider_id: &str,
+        generation: &str,
+        refresh_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        let tx = self.connection.transaction().map_err(storage_error)?;
+        tx.execute(
+            "DELETE FROM catalogue_items WHERE provider_id=?1 AND generation=?2",
+            params![provider_id, generation],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "DELETE FROM categories WHERE provider_id=?1 AND generation=?2",
+            params![provider_id, generation],
+        )
+        .map_err(storage_error)?;
+        tx.execute(
+            "UPDATE refresh_runs SET status=?2 WHERE id=?1",
+            params![refresh_id, status],
+        )
+        .map_err(storage_error)?;
+        tx.commit().map_err(storage_error)?;
+        Ok(())
+    }
+
+    pub fn list_categories(&self, provider_id: &str, kind: MediaKind) -> Result<Vec<Category>> {
+        let (generation, _) = self.provider_generation(provider_id)?;
+        let Some(generation) = generation else {
+            return Ok(vec![]);
+        };
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT cat.id, cat.name, COUNT(c.id)
+                 FROM categories cat
+                 LEFT JOIN catalogue_items c
+                   ON c.provider_id = cat.provider_id
+                  AND c.generation = cat.generation
+                  AND c.kind = cat.kind
+                  AND c.category_id = cat.id
+                 WHERE cat.provider_id=?1 AND cat.generation=?2 AND cat.kind=?3
+                 GROUP BY cat.id, cat.name
+                 ORDER BY cat.rowid ASC",
+            )
+            .map_err(storage_error)?;
+        let rows = stmt
+            .query_map(params![provider_id, generation, kind.as_str()], |r| {
+                Ok(Category {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    kind,
+                    count: r.get(2)?,
+                })
+            })
+            .map_err(storage_error)?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(storage_error)
+    }
+
+    pub fn query_catalog(
+        &self,
+        provider_id: &str,
+        kind: Option<MediaKind>,
+        category_id: Option<&str>,
+        query: Option<&str>,
+        offset: usize,
+        limit: usize,
+        sort: Option<&str>,
+    ) -> Result<Page<MediaItem>> {
+        let limit = limit.clamp(1, 200);
+        let (generation, _) = self.provider_generation(provider_id)?;
+        let Some(generation) = generation else {
+            return Ok(Page {
+                items: vec![],
+                total: 0,
+                offset,
+                limit,
+            });
+        };
+
+        let mut where_clauses = vec!["c.provider_id = ?1".to_string(), "c.generation = ?2".to_string()];
+        let mut bind_values: Vec<rusqlite::types::Value> = vec![
+            rusqlite::types::Value::Text(provider_id.to_string()),
+            rusqlite::types::Value::Text(generation),
+        ];
+
+        if let Some(k) = kind {
+            bind_values.push(rusqlite::types::Value::Text(k.as_str().to_string()));
+            where_clauses.push(format!("c.kind = ?{}", bind_values.len()));
+        }
+        if let Some(cat) = category_id.filter(|s| !s.trim().is_empty()) {
+            bind_values.push(rusqlite::types::Value::Text(cat.to_string()));
+            where_clauses.push(format!("c.category_id = ?{}", bind_values.len()));
+        }
+        if let Some(q) = query.map(normalize_search_name).filter(|s| !s.is_empty()) {
+            // Escape LIKE wildcards so special characters search literally.
+            let escaped = q
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            bind_values.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
+            where_clauses.push(format!("c.normalized_name LIKE ?{} ESCAPE '\\'", bind_values.len()));
+        }
+
+        let where_sql = where_clauses.join(" AND ");
+        let count_sql = format!("SELECT COUNT(*) FROM catalogue_items c WHERE {where_sql}");
+        let total: i64 = self
+            .connection
+            .query_row(
+                &count_sql,
+                rusqlite::params_from_iter(bind_values.iter()),
+                |r| r.get(0),
+            )
+            .map_err(storage_error)?;
+
+        let order_sql = match sort.unwrap_or("recommended") {
+            "title" => "c.normalized_name ASC, c.id ASC",
+            "year" => "COALESCE(c.year, '') DESC, c.rating DESC, c.rowid ASC",
+            "added" => "COALESCE(c.added, 0) DESC, c.rowid DESC",
+            _ => "COALESCE(c.rating, 0) DESC, COALESCE(c.added, 0) DESC, c.rowid ASC",
+        };
+
+        let mut query_binds = bind_values;
+        query_binds.push(rusqlite::types::Value::Integer(limit as i64));
+        let limit_idx = query_binds.len();
+        query_binds.push(rusqlite::types::Value::Integer(offset as i64));
+        let offset_idx = query_binds.len();
+
+        let select_sql = format!(
+            "SELECT c.kind, c.id, c.name, c.category_id, cat.name, c.poster, c.backdrop, c.year, c.rating, c.extension, c.added
+             FROM catalogue_items c
+             LEFT JOIN categories cat
+               ON cat.provider_id = c.provider_id
+              AND cat.generation = c.generation
+              AND cat.kind = c.kind
+              AND cat.id = c.category_id
+             WHERE {where_sql}
+             ORDER BY {order_sql}
+             LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
+        );
+        let mut stmt = self.connection.prepare(&select_sql).map_err(storage_error)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params_from_iter(query_binds.iter()),
+                row_to_media_item,
+            )
+            .map_err(storage_error)?;
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(row.map_err(storage_error)?);
+        }
+        Ok(Page {
+            items,
+            total: total.max(0) as usize,
+            offset,
+            limit,
+        })
+    }
+
+    pub fn related_items(
+        &self,
+        provider_id: &str,
+        kind: MediaKind,
+        category_id: &str,
+        exclude_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MediaItem>> {
+        let (generation, _) = self.provider_generation(provider_id)?;
+        let Some(generation) = generation else {
+            return Ok(vec![]);
+        };
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT c.kind, c.id, c.name, c.category_id, cat.name, c.poster, c.backdrop, c.year, c.rating, c.extension, c.added
+                 FROM catalogue_items c
+                 LEFT JOIN categories cat
+                   ON cat.provider_id = c.provider_id
+                  AND cat.generation = c.generation
+                  AND cat.kind = c.kind
+                  AND cat.id = c.category_id
+                 WHERE c.provider_id=?1 AND c.generation=?2 AND c.kind=?3 AND c.category_id=?4 AND c.id!=?5
+                 ORDER BY COALESCE(c.rating, 0) DESC, c.rowid ASC
+                 LIMIT ?6",
+            )
+            .map_err(storage_error)?;
+        let rows = stmt
+            .query_map(
+                params![
+                    provider_id,
+                    generation,
+                    kind.as_str(),
+                    category_id,
+                    exclude_id,
+                    limit as i64
+                ],
+                row_to_media_item,
+            )
+            .map_err(storage_error)?;
+        rows.collect::<std::result::Result<_, _>>()
+            .map_err(storage_error)
+    }
+
+    pub fn item_history_entries(
+        &self,
+        provider: &str,
+        profile: &str,
+        kind: MediaKind,
+        media_id: &str,
+    ) -> Result<Vec<HistoryEntry>> {
+        let mut stmt = self
+            .connection
+            .prepare(
+                "SELECT kind,media_id,episode_id,position_ms,duration_ms,updated_at,completed
+                 FROM history
+                 WHERE provider_id=?1 AND profile_id=?2 AND kind=?3 AND media_id=?4
+                 ORDER BY updated_at DESC, rowid DESC",
+            )
+            .map_err(storage_error)?;
+        stmt.query_map(
+            params![provider, profile, kind.as_str(), media_id],
+            |r| {
+                Ok(HistoryEntry {
+                    kind: r.get(0)?,
+                    media_id: r.get(1)?,
+                    episode_id: r.get(2)?,
+                    position_ms: r.get(3)?,
+                    duration_ms: r.get(4)?,
+                    updated_at: r.get(5)?,
+                    completed: r.get::<_, i64>(6)? != 0,
+                })
+            },
+        )
+        .map_err(storage_error)?
+        .collect::<std::result::Result<_, _>>()
+        .map_err(storage_error)
+    }
+
+    pub fn sample_items_by_kind(
+        &self,
+        provider_id: &str,
+        kind: MediaKind,
+        limit: usize,
+        order_by: &str,
+    ) -> Result<Vec<MediaItem>> {
+        let (generation, _) = self.provider_generation(provider_id)?;
+        let Some(generation) = generation else {
+            return Ok(vec![]);
+        };
+        let sql = format!(
+            "SELECT c.kind, c.id, c.name, c.category_id, cat.name, c.poster, c.backdrop, c.year, c.rating, c.extension, c.added
+             FROM catalogue_items c
+             LEFT JOIN categories cat
+               ON cat.provider_id = c.provider_id
+              AND cat.generation = c.generation
+              AND cat.kind = c.kind
+              AND cat.id = c.category_id
+             WHERE c.provider_id=?1 AND c.generation=?2 AND c.kind=?3
+             ORDER BY {order_by}
+             LIMIT ?4"
+        );
+        let mut stmt = self.connection.prepare(&sql).map_err(storage_error)?;
+        let rows = stmt
+            .query_map(
+                params![provider_id, generation, kind.as_str(), limit as i64],
+                row_to_media_item,
+            )
+            .map_err(storage_error)?;
+        rows.collect::<std::result::Result<_, _>>()
             .map_err(storage_error)
     }
 }

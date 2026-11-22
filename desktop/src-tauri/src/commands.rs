@@ -1,11 +1,14 @@
 use crate::{
+    catalog::CatalogService,
     models::{
-        AppError, AppSettings, Bootstrap, HistoryItem, MediaItem, MediaRef, Page, Profile,
+        AppError, AppSettings, Bootstrap, Category, EpgQueryResponse, HistoryItem, MediaDetails,
+        MediaItem, MediaKind, MediaRef, Page, Profile,
     },
     player::service::{PlayerCommand, PlayerService, PlayerSnapshot},
     state::AppState,
 };
 use serde::Deserialize;
+use tauri::Emitter;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +70,40 @@ pub struct SettingsUpdateArgs {
     pub compact_library: Option<bool>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogQueryArgs {
+    pub kind: Option<MediaKind>,
+    pub category_id: Option<String>,
+    pub query: Option<String>,
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    pub sort: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoriesArgs {
+    pub kind: MediaKind,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaRefArgs {
+    #[serde(rename = "ref")]
+    pub media_ref: MediaRef,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpgQueryArgs {
+    pub channel_ids: Vec<String>,
+    pub from_ms: i64,
+    pub to_ms: i64,
+}
+
 #[tauri::command]
 pub fn app_bootstrap(
     state: tauri::State<'_, AppState>,
@@ -81,9 +118,12 @@ pub fn app_bootstrap(
 pub async fn provider_connect(
     args: ConnectArgs,
     state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<Bootstrap, AppError> {
     let _ = player.control(PlayerCommand::Stop);
+    catalog.cancel_active_refresh();
+    catalog.clear_epg_cache();
     state
         .connect(&args.base_url, &args.username, &args.password, args.remember)
         .await
@@ -92,9 +132,12 @@ pub async fn provider_connect(
 #[tauri::command]
 pub async fn provider_disconnect(
     state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<(), AppError> {
     let _ = player.control(PlayerCommand::Stop);
+    catalog.cancel_active_refresh();
+    catalog.clear_epg_cache();
     state.disconnect()
 }
 
@@ -171,6 +214,76 @@ pub fn settings_update(
         args.preferred_audio.as_deref(),
         args.compact_library,
     )
+}
+
+#[tauri::command]
+pub fn catalog_query(
+    args: CatalogQueryArgs,
+    state: tauri::State<'_, AppState>,
+) -> Result<Page<MediaItem>, AppError> {
+    let provider_id = state
+        .with_store(|s| s.active_provider_id())?
+        .ok_or_else(|| AppError::unauthenticated("Connect a provider to browse your library."))?;
+    state.with_store(|s| {
+        s.query_catalog(
+            &provider_id,
+            args.kind,
+            args.category_id.as_deref(),
+            args.query.as_deref(),
+            args.offset,
+            args.limit,
+            args.sort.as_deref(),
+        )
+    })
+}
+
+#[tauri::command]
+pub fn catalog_categories(
+    args: CategoriesArgs,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<Category>, AppError> {
+    let provider_id = state
+        .with_store(|s| s.active_provider_id())?
+        .ok_or_else(|| AppError::unauthenticated("Connect a provider to browse your library."))?;
+    state.with_store(|s| s.list_categories(&provider_id, args.kind))
+}
+
+#[tauri::command]
+pub async fn catalog_refresh(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
+) -> Result<String, AppError> {
+    catalog
+        .refresh(&state, |event| {
+            let _ = app.emit("catalog-progress", event);
+        })
+        .await
+}
+
+#[tauri::command]
+pub fn catalog_refresh_cancel(catalog: tauri::State<'_, CatalogService>) {
+    catalog.cancel_active_refresh();
+}
+
+#[tauri::command]
+pub async fn media_details(
+    args: MediaRefArgs,
+    state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
+) -> Result<MediaDetails, AppError> {
+    catalog.media_details(&state, &args.media_ref).await
+}
+
+#[tauri::command]
+pub async fn epg_query(
+    args: EpgQueryArgs,
+    state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
+) -> Result<EpgQueryResponse, AppError> {
+    catalog
+        .epg_query(&state, &args.channel_ids, args.from_ms, args.to_ms)
+        .await
 }
 
 #[tauri::command]

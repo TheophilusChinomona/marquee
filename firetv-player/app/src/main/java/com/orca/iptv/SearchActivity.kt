@@ -38,11 +38,25 @@ class SearchActivity : AppCompatActivity() {
     private var query = ""
     private var catalogReady = false
     private var refreshing = false
+    private var renderToken = 0
+    @Volatile
+    private var index: SearchIndex? = null
+    private var favoriteKeys: Set<String> = emptySet()
+    private data class SearchIndex(
+        val vod: List<SearchHit>,
+        val series: List<SearchHit>,
+        val live: List<SearchHit>,
+        val source: List<Catalog.Item>,
+        val seriesSource: List<Catalog.Item>,
+        val liveSource: List<Catalog.Item>
+    )
+
     private data class SearchHit(
         val item: Catalog.Item,
         val mode: Int,
         val index: Int,
-        val length: Int
+        val length: Int,
+        val name: String
     )
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -233,6 +247,9 @@ class SearchActivity : AppCompatActivity() {
             catalogReady = true
             progress.visibility = View.GONE
             render()
+            // Prepare the search index while the screen sits idle, so the first
+            // letter typed does not have to wait for 58k titles to be normalised.
+            withContext(Dispatchers.Default) { ensureIndex() }
         }
     }
 
@@ -246,19 +263,24 @@ class SearchActivity : AppCompatActivity() {
         refreshing = true
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
-                CatalogSync.refresh(applicationContext, client) { label ->
-                    scope.launch {
-                        if (query.trim().isEmpty()) status.text = "Updating library · $label"
-                    }
-                }
+                CatalogSync.refresh(
+                    applicationContext,
+                    client,
+                    onProgress = { label ->
+                        scope.launch {
+                            if (query.trim().isEmpty()) status.text = "Updating library · $label"
+                        }
+                    },
+                    shouldContinue = { !isFinishing }
+                )
             }
             refreshing = false
             if (ok) {
+                // Reloading here would hold two catalogues at once on a 1 GB stick;
+                // the next screen to open picks the refreshed copy up instead.
                 Catalog.invalidate()
-                withContext(Dispatchers.IO) { Catalog.ensureSearch(applicationContext) }
                 if (query.trim().isEmpty()) status.text = "Library updated"
-                render()
-            } else if (query.trim().isEmpty()) {
+            } else if (!isFinishing && query.trim().isEmpty()) {
                 status.text = "Could not update the library"
             }
         }
@@ -282,23 +304,39 @@ class SearchActivity : AppCompatActivity() {
     }
 
     private fun render() {
+        refreshFavorites()
         val text = query.trim()
         if (text.isEmpty()) {
-            header.text = "Trending at home"
-            status.text = "Type to search live TV, movies and series"
-            renderRecents()
-            val trending = Catalog.vodSections.flatMap { it.items }
-                .take(gridColumns * 3)
-                .map { item ->
-                    val result = SearchResult(item, MODE_VOD)
-                    SearchRow.Item(result, isFavorite(result))
-                }
-            adapter.submit(trending)
+            renderTrending()
             return
         }
 
+        // Matching 58k titles takes a moment; keep it off the UI thread so typing
+        // stays responsive, and drop results the user has already typed past.
+        val token = ++renderToken
+        status.text = "Searching…"
+        scope.launch {
+            val sections = withContext(Dispatchers.Default) { filter(text) }
+            if (token != renderToken || isFinishing) return@launch
+            showSections(text, sections)
+        }
+    }
+
+    private fun renderTrending() {
+        header.text = "Trending at home"
+        status.text = "Type to search live TV, movies and series"
+        renderRecents()
+        val trending = Catalog.vodSections.flatMap { it.items }
+            .take(gridColumns * 3)
+            .map { item ->
+                val result = SearchResult(item, MODE_VOD)
+                SearchRow.Item(result, isFavorite(result))
+            }
+        adapter.submit(trending)
+    }
+
+    private fun showSections(text: String, sections: List<Pair<String, List<SearchResult>>>) {
         recentRow.visibility = View.GONE
-        val sections = filter(text)
         header.text = "Results for “$text”"
         val total = sections.sumOf { it.second.size }
         status.text = when {
@@ -317,8 +355,16 @@ class SearchActivity : AppCompatActivity() {
         )
     }
 
+    /** One read per render, not one per result. */
+    private fun refreshFavorites() {
+        val profile = ProfileStore.activeId(this)
+        favoriteKeys = FavoriteStore.all(this, profile)
+            .map { "${it.mode}:${it.id}" }
+            .toHashSet()
+    }
+
     private fun isFavorite(result: SearchResult): Boolean =
-        FavoriteStore.isFavorite(this, ProfileStore.activeId(this), result.item.id, result.mode)
+        favoriteKeys.contains("${result.mode}:${result.item.id}")
 
     private fun renderRecents() {
         val recents = Prefs.recents(this)
@@ -360,31 +406,120 @@ class SearchActivity : AppCompatActivity() {
     private fun filter(text: String): List<Pair<String, List<SearchResult>>> {
         val needle = normalise(text)
         if (needle.isEmpty()) return emptyList()
+        val index = ensureIndex()
         return listOf(
-            "Movies" to rank(Catalog.searchVodItems, MODE_VOD, needle),
-            "Series" to rank(Catalog.searchSeriesItems, MODE_SERIES, needle),
-            "Channels" to rank(Catalog.liveItems, MODE_LIVE, needle)
+            "Movies" to rank(index.vod, MODE_VOD, needle),
+            "Series" to rank(index.series, MODE_SERIES, needle),
+            "Channels" to rank(index.live, MODE_LIVE, needle)
         )
     }
 
-    private fun rank(items: List<Catalog.Item>, mode: Int, needle: String): List<SearchResult> =
-        items.asSequence()
-            .mapNotNull { item ->
-                val name = normalise(Catalog.displayName(item.name))
-                val at = name.indexOf(needle)
-                if (at < 0) null else SearchHit(item, mode, at, name.length)
-            }
-            .sortedWith(compareBy({ it.index }, { it.length }))
-            .take(40)
-            .map { SearchResult(it.item, it.mode) }
-            .toList()
+    /**
+     * Normalising 58k titles with two regexes each, on every keystroke, is what made
+     * typing freeze once search covered the whole library. Do it once, off the UI
+     * thread, and keep the prepared names; a catalogue refresh rebuilds it.
+     */
+    private fun ensureIndex(): SearchIndex {
+        val current = index
+        if (current != null && current.source === Catalog.searchVodItems) return current
 
-    private fun normalise(value: String): String =
-        java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
-            .replace(MARKS, "")
-            .lowercase()
-            .replace(NON_ALNUM, " ")
-            .trim()
+        fun prepare(items: List<Catalog.Item>, mode: Int): List<SearchHit> =
+            items.map { item ->
+                // Matching runs on the raw name: stripping quality tags and language
+                // prefixes costs four regex passes per title and buys nothing here,
+                // because a substring search finds "greys" inside "EN - Grey's" anyway.
+                val name = normalise(item.name)
+                SearchHit(item, mode, 0, name.length, name)
+            }
+
+        // Reuse the existing index when only one list changed.
+        val vod = current?.vod?.takeIf { current.source === Catalog.searchVodItems }
+            ?: prepare(Catalog.searchVodItems, MODE_VOD)
+        val series = current?.series?.takeIf { current.seriesSource === Catalog.searchSeriesItems }
+            ?: prepare(Catalog.searchSeriesItems, MODE_SERIES)
+        val live = current?.live?.takeIf { current.liveSource === Catalog.liveItems }
+            ?: prepare(Catalog.liveItems, MODE_LIVE)
+
+        val built = SearchIndex(
+            vod = vod,
+            series = series,
+            live = live,
+            source = Catalog.searchVodItems,
+            seriesSource = Catalog.searchSeriesItems,
+            liveSource = Catalog.liveItems
+        )
+        index = built
+        return built
+    }
+
+    /**
+     * Keeps the best [LIMIT] matches in order instead of sorting every candidate:
+     * a single letter matches tens of thousands of titles, and sorting that list
+     * cost more than the scan did.
+     */
+    private fun rank(entries: List<SearchHit>, mode: Int, needle: String): List<SearchResult> {
+        val chosen = ArrayList<SearchHit>(LIMIT)
+        var worstAt = Int.MAX_VALUE
+
+        entries.forEach { entry ->
+            val at = entry.name.indexOf(needle)
+            if (at < 0) return@forEach
+            if (chosen.size == LIMIT && at > worstAt) return@forEach
+
+            var low = 0
+            var high = chosen.size
+            while (low < high) {
+                val mid = (low + high) / 2
+                val other = chosen[mid]
+                if (other.index < at || (other.index == at && other.length <= entry.length)) {
+                    low = mid + 1
+                } else {
+                    high = mid
+                }
+            }
+            chosen.add(low, entry.copy(index = at))
+            if (chosen.size > LIMIT) chosen.removeAt(LIMIT)
+            worstAt = chosen[chosen.size - 1].index
+        }
+
+        return chosen.map { SearchResult(it.item, mode) }
+    }
+
+    private fun normalise(value: String): String {
+        var plain = true
+        var i = 0
+        while (i < value.length) {
+            if (value[i].code > 127) {
+                plain = false
+                break
+            }
+            i++
+        }
+        if (plain) return asciiFold(value)
+        return asciiFold(
+            java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
+                .replace(MARKS, "")
+        )
+    }
+
+    /** Lowercase, non-alphanumerics to spaces, no regex and no allocation churn. */
+    private fun asciiFold(value: String): String {
+        val out = StringBuilder(value.length)
+        var space = true
+        value.forEach { char ->
+            val folded = if (char in 'A'..'Z') char + 32 else char
+            val keep = folded in 'a'..'z' || folded in '0'..'9'
+            if (keep) {
+                out.append(folded)
+                space = false
+            } else if (!space) {
+                out.append(' ')
+                space = true
+            }
+        }
+        while (out.isNotEmpty() && out[out.length - 1] == ' ') out.deleteCharAt(out.length - 1)
+        return out.toString()
+    }
 
     private fun toggleFavorite(result: SearchResult) {
         val added = FavoriteStore.toggle(
@@ -432,8 +567,8 @@ class SearchActivity : AppCompatActivity() {
     }
 
     companion object {
+        private const val LIMIT = 40
         private val MARKS = Regex("\\p{Mn}+")
-        private val NON_ALNUM = Regex("[^a-z0-9]+")
 
         fun intent(context: Context) = Intent(context, SearchActivity::class.java)
     }

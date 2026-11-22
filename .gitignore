@@ -13,3 +13,10 @@ goose-*.tar.bz2
 # Local, never committed
 PORTFOLIO-BRIEF.md
 screenshots.zip
+
+# Portfolio captures (README uses home/series/my-list only)
+screenshots/live-guide.png
+screenshots/player-live.png
+screenshots/player-vod.png
+screenshots/profiles.png
+screenshots/icon-512.png

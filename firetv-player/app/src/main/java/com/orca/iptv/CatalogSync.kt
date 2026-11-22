@@ -4,17 +4,18 @@ import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
-import org.json.JSONObject
+import java.io.BufferedWriter
 import java.io.File
+import java.io.OutputStreamWriter
 
 /**
  * The app ships catalogue snapshots in `assets/`, which go stale the moment the
  * provider adds titles. This refreshes them from the API into app storage, in the
  * same JSON shape, and [Catalog] prefers the cached copy.
  *
- * Live is included because providers add channels too; that is 140 small requests,
- * so callers must expect this to take a minute on a TV stick and run it in the
- * background.
+ * Everything is streamed straight to disk, one provider category at a time: an
+ * earlier version collected 58k rows in memory on top of the copy Search was
+ * already holding, and a 1 GB Fire TV responds to that by killing the app.
  */
 object CatalogSync {
 
@@ -28,99 +29,118 @@ object CatalogSync {
 
     fun cacheFile(context: Context, name: String) = File(cacheDir(context), name)
 
-    fun cacheAgeMs(context: Context): Long? {
-        val file = cacheFile(context, "vod_catalog.json")
-        return if (file.exists()) System.currentTimeMillis() - file.lastModified() else null
-    }
-
     fun isStale(context: Context): Boolean {
-        val age = cacheAgeMs(context) ?: return true
-        return age > MAX_AGE_MS
+        val file = cacheFile(context, "vod_catalog.json")
+        if (!file.exists()) return true
+        return System.currentTimeMillis() - file.lastModified() > MAX_AGE_MS
     }
 
     /** Returns true when every catalogue was fetched and written. */
     suspend fun refresh(
         context: Context,
         client: XtreamClient,
-        onProgress: (String) -> Unit
+        onProgress: (String) -> Unit,
+        shouldContinue: () -> Boolean = { true }
     ): Boolean = withContext(Dispatchers.IO) {
         synchronized(lock) {
             runCatching {
                 val dir = cacheDir(context).apply { mkdirs() }
 
-                val live = fetch(client, "get_live_categories", "get_live_streams", false, "channels", onProgress)
-                write(dir, "live_catalog.json", live)
-
-                val vod = fetch(client, "get_vod_categories", "get_vod_streams", false, "movies", onProgress)
-                write(dir, "vod_catalog.json", vod)
-                write(dir, "vod_home.json", homeSlice(vod))
-
-                val series = fetch(client, "get_series_categories", "", true, "series", onProgress)
-                write(dir, "series_catalog.json", series)
-                write(dir, "series_home.json", homeSlice(series))
-
-                true
+                stream(client, dir, "live_catalog", "get_live_categories", "get_live_streams",
+                    series = false, label = "channels", onProgress, shouldContinue) &&
+                    stream(client, dir, "vod_catalog", "get_vod_categories", "get_vod_streams",
+                        series = false, label = "movies", onProgress, shouldContinue) &&
+                    stream(client, dir, "series_catalog", "get_series_categories", "",
+                        series = true, label = "series", onProgress, shouldContinue)
             }.onFailure { error ->
                 android.util.Log.e("MarqueeCatalog", "catalogue refresh failed", error)
             }.getOrDefault(false)
         }
     }
 
-    private fun fetch(
+    /**
+     * Writes `<name>.json` (everything) and `<name>_home.json` (the first twenty of
+     * each category) in one pass, so no list larger than a single category is held.
+     */
+    private fun stream(
         client: XtreamClient,
-        categoryAction: String,
-        itemAction: String,
-        seriesMode: Boolean,
-        label: String,
-        onProgress: (String) -> Unit
-    ): Pair<List<Pair<String, String>>, List<List<String>>> {
-        val categories = client.categories(categoryAction)
-        val items = ArrayList<List<String>>(8_000)
-
-        categories.forEachIndexed { index, category ->
-            onProgress("$label ${index + 1}/${categories.size}")
-            if (seriesMode) {
-                client.series(category.id).forEach { stream ->
-                    items.add(listOf(stream.id, stream.name, category.id, stream.icon, ""))
-                }
-            } else {
-                client.streams(itemAction, category.id).forEach { stream ->
-                    items.add(listOf(stream.id, stream.name, category.id, stream.icon, stream.ext))
-                }
-            }
-        }
-        return categories.map { it.id to it.name } to items
-    }
-
-    private fun homeSlice(
-        data: Pair<List<Pair<String, String>>, List<List<String>>>
-    ): Pair<List<Pair<String, String>>, List<List<String>>> {
-        val grouped = data.second.groupBy { it[2] }
-        val keep = ArrayList<List<String>>(HOME_PER_CATEGORY * data.first.size)
-        data.first.forEach { (id, _) -> keep.addAll(grouped[id].orEmpty().take(HOME_PER_CATEGORY)) }
-        return data.first to keep
-    }
-
-    private fun write(
         dir: File,
         name: String,
-        data: Pair<List<Pair<String, String>>, List<List<String>>>
-    ) {
-        val root = JSONObject()
-        val categories = JSONArray()
-        data.first.forEach { (id, label) ->
-            categories.put(JSONArray().put(id).put(label))
-        }
-        val items = JSONArray()
-        data.second.forEach { row -> items.put(JSONArray(row)) }
-        root.put("categories", categories)
-        root.put("items", items)
+        categoryAction: String,
+        itemAction: String,
+        series: Boolean,
+        label: String,
+        onProgress: (String) -> Unit,
+        shouldContinue: () -> Boolean
+    ): Boolean {
+        val categories = client.categories(categoryAction)
+        if (categories.isEmpty()) return false
 
-        // Write then rename, so a killed process cannot leave a half catalogue behind.
-        val target = File(dir, name)
-        val temp = File(dir, "$name.tmp")
-        temp.writeText(root.toString())
+        val fullTemp = File(dir, "$name.json.tmp")
+        val homeTemp = File(dir, "${name}_home.json.tmp")
+        val header = "{\"categories\":" +
+            JSONArray(categories.map { listOf(it.id, it.name) }).toString() +
+            ",\"items\":["
+
+        try {
+            BufferedWriter(OutputStreamWriter(fullTemp.outputStream(), Charsets.UTF_8)).use { full ->
+                BufferedWriter(OutputStreamWriter(homeTemp.outputStream(), Charsets.UTF_8)).use { home ->
+                    full.write(header)
+                    home.write(header)
+                    var fullFirst = true
+                    var homeFirst = true
+                    var homeRows = 0
+
+                    categories.forEachIndexed { index, category ->
+                        if (!shouldContinue()) return false
+                        onProgress("$label ${index + 1}/${categories.size}")
+
+                        val rows = if (series) {
+                            client.series(category.id).map {
+                                listOf(it.id, it.name, category.id, it.icon, "")
+                            }
+                        } else {
+                            client.streams(itemAction, category.id).map {
+                                listOf(it.id, it.name, category.id, it.icon, it.ext)
+                            }
+                        }
+
+                        rows.forEach { row ->
+                            val json = JSONArray(row).toString()
+                            if (!fullFirst) full.write(",")
+                            full.write(json)
+                            fullFirst = false
+
+                            if (homeRows < HOME_PER_CATEGORY) {
+                                if (!homeFirst) home.write(",")
+                                home.write(json)
+                                homeFirst = false
+                                homeRows++
+                            }
+                        }
+                        homeRows = 0
+                    }
+
+                    full.write("]}")
+                    home.write("]}")
+                }
+            }
+        } catch (error: Throwable) {
+            fullTemp.delete()
+            homeTemp.delete()
+            throw error
+        }
+
+        replace(fullTemp, File(dir, "$name.json"))
+        replace(homeTemp, File(dir, "${name}_home.json"))
+        return true
+    }
+
+    private fun replace(temp: File, target: File) {
         if (target.exists()) target.delete()
-        temp.renameTo(target)
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
     }
 }

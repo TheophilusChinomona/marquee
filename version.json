@@ -1,7 +1,7 @@
 {
-  "versionCode": 9,
-  "versionName": "1.7",
+  "versionCode": 10,
+  "versionName": "1.8",
   "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk",
-  "sha256": "a52b340ba2b80c6a8dc10cddf7709cdf1d46d770aa653de4c816448a18fe6c19",
-  "notes": "Marquee 1.7: Previous, Next and an episode list inside the player, plus an episode label."
+  "sha256": "f0b573583419b3851c3a05e8535dbd931966cb5efc7eba2507d6ffad444a1393",
+  "notes": "Marquee 1.8: Search answers as you type instead of freezing, and the library refresh no longer strains memory."
 }

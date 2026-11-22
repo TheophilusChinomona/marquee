@@ -112,11 +112,24 @@ object Catalog {
 
     private fun load(context: Context, asset: String): List<Section> {
         val cached = CatalogSync.cacheFile(context, asset)
-        val text = if (cached.exists() && cached.length() > 0L) {
-            cached.readText()
-        } else {
-            context.assets.open(asset).bufferedReader().use { it.readText() }
+        if (cached.exists() && cached.length() > 0L) {
+            runCatching { return parse(cached.readText()) }
+                .onFailure {
+                    // A half-written or unreadable cache must not take the app down;
+                    // drop it and fall back to the copy shipped in the APK.
+                    android.util.Log.e("MarqueeCatalog", "dropping unreadable " + asset, it)
+                    cached.delete()
+                }
         }
+        return runCatching {
+            parse(context.assets.open(asset).bufferedReader().use { it.readText() })
+        }.getOrElse {
+            android.util.Log.e("MarqueeCatalog", "unreadable asset " + asset, it)
+            emptyList()
+        }
+    }
+
+    private fun parse(text: String): List<Section> {
         val root = JSONObject(text)
         val categories = root.getJSONArray("categories")
         val items = root.getJSONArray("items")

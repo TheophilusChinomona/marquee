@@ -19,85 +19,89 @@ data class Recommendation(
  */
 object Recommendations {
 
+    /**
+     * Candidates come from the whole library when it is loaded (31k movies, 17k
+     * series); the bundled home slice is only a fallback. Drawing from ~970 titles was
+     * why "For You" kept repeating itself.
+     *
+     * Scoring: category affinity learned from history, plus a jitter that is stable per
+     * profile and per id, then at most two picks per category per pass so a single
+     * shelf cannot own the row.
+     */
     fun forYou(context: Context, profileId: String, limit: Int = 18): List<Recommendation> {
         val history = HistoryStore.all(context, profileId)
         val favorites = FavoriteStore.all(context, profileId)
-        val sectionMap = HashMap<String, Pair<Catalog.Item, Int>>()
-
-        Catalog.vodSections.forEach { section ->
-            section.items.forEach { sectionMap[it.id] = it to MODE_VOD }
-        }
-        Catalog.seriesSections.forEach { section ->
-            section.items.forEach { sectionMap[it.id] = it to MODE_SERIES }
-        }
 
         val affinity = HashMap<String, Double>()
         val seen = HashSet<String>()
 
-        fun learn(item: Catalog.Item, mode: Int, weight: Double) {
-            val sectionId = sectionMap[item.id]?.first?.categoryId ?: item.categoryId
-            if (sectionId.isNotBlank()) affinity[sectionId] = (affinity[sectionId] ?: 0.0) + weight
-            seen.add("${mode}:${item.id}")
-        }
-
         history.forEach { entry ->
-            val found = sectionMap[entry.id]?.first
-            if (found != null) learn(found, entry.mode, 1.0 + entry.progress * 2.0)
+            if (entry.categoryId.isNotBlank()) {
+                affinity[entry.categoryId] =
+                    (affinity[entry.categoryId] ?: 0.0) + 1.0 + entry.progress * 2.0
+            }
             seen.add("${entry.mode}:${entry.id}")
         }
-        favorites.forEach { favorite ->
-            val found = sectionMap[favorite.id]?.first
-            if (found != null) learn(found, favorite.mode, 2.2)
-            seen.add("${favorite.mode}:${favorite.id}")
+        favorites.forEach { seen.add("${it.mode}:${it.id}") }
+
+        val vodItems = if (Catalog.hasSearch) {
+            Catalog.searchVodItems
+        } else {
+            Catalog.vodSections.flatMap { it.items }
+        }
+        val seriesItems = if (Catalog.hasSearch) {
+            Catalog.searchSeriesItems
+        } else {
+            Catalog.seriesSections.flatMap { it.items }
         }
 
         val seed = profileId.hashCode()
-        val scored = ArrayList<Recommendation>()
-        Catalog.vodSections.forEach { section ->
-            section.items.forEach itemLoop@ { item ->
-                if (seen.contains("${MODE_VOD}:${item.id}")) return@itemLoop
-                scored.add(
+        val buckets = HashMap<String, ArrayList<Recommendation>>()
+
+        fun collect(items: List<Catalog.Item>, mode: Int, bonus: Double) {
+            items.forEach { item ->
+                if (seen.contains("$mode:${item.id}")) return@forEach
+                val bucket = buckets.getOrPut(item.categoryId) { ArrayList(4) }
+                if (bucket.size >= 4) return@forEach
+                bucket.add(
                     Recommendation(
                         item = item,
-                        mode = MODE_VOD,
-                        categoryId = section.id,
-                        score = score(affinity, section.id, seed, item.id)
-                    )
-                )
-            }
-        }
-        Catalog.seriesSections.forEach { section ->
-            section.items.forEach itemLoop@ { item ->
-                if (seen.contains("${MODE_SERIES}:${item.id}")) return@itemLoop
-                scored.add(
-                    Recommendation(
-                        item = item,
-                        mode = MODE_SERIES,
-                        categoryId = section.id,
-                        score = score(affinity, section.id, seed, item.id) + 0.15
+                        mode = mode,
+                        categoryId = item.categoryId,
+                        score = score(affinity, item.categoryId, seed, item.id) + bonus
                     )
                 )
             }
         }
 
-        val ordered = scored.sortedByDescending { it.score }
-        val perCategory = HashMap<String, Int>()
-        val diverse = ArrayList<Recommendation>(limit)
-        ordered.forEach { candidate ->
-            val count = perCategory[candidate.categoryId] ?: 0
-            if (count < 2) {
-                diverse.add(candidate)
-                perCategory[candidate.categoryId] = count + 1
-            }
+        collect(vodItems, MODE_VOD, 0.0)
+        collect(seriesItems, MODE_SERIES, 0.15)
+
+        val strongestFirst = buckets.entries.sortedByDescending { entry ->
+            entry.value.maxOf { it.score }
         }
-        if (diverse.size < limit) {
-            ordered.forEach { candidate ->
-                if (diverse.none { it.item.id == candidate.item.id && it.mode == candidate.mode }) {
-                    diverse.add(candidate)
+
+        val out = ArrayList<Recommendation>(limit)
+        for (pass in 0 until 2) {
+            strongestFirst.forEach { (_, bucket) ->
+                if (out.size >= limit) return@forEach
+                val pick = bucket.getOrNull(pass) ?: return@forEach
+                if (!seen.add("${pick.mode}:${pick.item.id}")) return@forEach
+                out.add(pick)
+            }
+            if (out.size >= limit) break
+        }
+
+        if (out.size < limit) {
+            strongestFirst.forEach { (_, bucket) ->
+                bucket.forEach { candidate ->
+                    if (out.size < limit && out.none { it.item.id == candidate.item.id }) {
+                        out.add(candidate)
+                    }
                 }
             }
         }
-        return diverse.take(limit)
+        return out.take(limit)
     }
 
     fun becauseYouWatched(
@@ -109,12 +113,20 @@ object Recommendations {
         return history.asSequence().mapNotNull { entry ->
             val item = Catalog.find(entry.mode, entry.id) ?: return@mapNotNull null
             val sectionId = item.categoryId
-            val candidates = when (entry.mode) {
-                MODE_SERIES -> Catalog.seriesSections
-                else -> Catalog.vodSections
+            val pool = if (Catalog.hasSearch) {
+                val source = if (entry.mode == MODE_SERIES) {
+                    Catalog.searchSeriesItems
+                } else {
+                    Catalog.searchVodItems
+                }
+                source.filter { it.categoryId == sectionId && it.id != entry.id }
+            } else {
+                val sections = if (entry.mode == MODE_SERIES) Catalog.seriesSections else Catalog.vodSections
+                sections.firstOrNull { it.id == sectionId }?.items.orEmpty()
+                    .filterNot { it.id == entry.id }
             }
-            val pool = candidates.firstOrNull { it.id == sectionId }?.items.orEmpty()
-                .filterNot { it.id == entry.id }
+            if (pool.isEmpty()) return@mapNotNull null
+            val poolMapped = pool
                 .map {
                     Recommendation(
                         item = it,
@@ -123,8 +135,7 @@ object Recommendations {
                         score = 1.0
                     )
                 }
-            if (pool.isEmpty()) return@mapNotNull null
-            Catalog.displayName(item.name) to pool.take(limit)
+            Catalog.displayName(item.name) to poolMapped.take(limit)
         }.firstOrNull()
     }
 

@@ -37,6 +37,7 @@ class SearchActivity : AppCompatActivity() {
     private val gridColumns = 5
     private var query = ""
     private var catalogReady = false
+    private var refreshing = false
     private data class SearchHit(
         val item: Catalog.Item,
         val mode: Int,
@@ -53,6 +54,7 @@ class SearchActivity : AppCompatActivity() {
         client = XtreamClient(creds.server, creds.user, creds.pass)
         buildUi()
         loadCatalog()
+        refreshIfStale()
     }
 
     private fun buildUi() {
@@ -231,6 +233,34 @@ class SearchActivity : AppCompatActivity() {
             catalogReady = true
             progress.visibility = View.GONE
             render()
+        }
+    }
+
+    /**
+     * Titles the provider added after this app was built only appear once the
+     * catalogue is refreshed. It runs behind the UI: searching keeps working against
+     * the previous copy while the download happens.
+     */
+    private fun refreshIfStale() {
+        if (refreshing || !CatalogSync.isStale(this)) return
+        refreshing = true
+        scope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                CatalogSync.refresh(applicationContext, client) { label ->
+                    scope.launch {
+                        if (query.trim().isEmpty()) status.text = "Updating library · $label"
+                    }
+                }
+            }
+            refreshing = false
+            if (ok) {
+                Catalog.invalidate()
+                withContext(Dispatchers.IO) { Catalog.ensureSearch(applicationContext) }
+                if (query.trim().isEmpty()) status.text = "Library updated"
+                render()
+            } else if (query.trim().isEmpty()) {
+                status.text = "Could not update the library"
+            }
         }
     }
 

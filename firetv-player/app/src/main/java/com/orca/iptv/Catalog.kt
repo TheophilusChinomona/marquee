@@ -56,6 +56,10 @@ object Catalog {
     @Volatile
     private var searchLoaded = false
 
+    /** True once the full catalogues are in memory (Search has been opened). */
+    val hasSearch: Boolean
+        get() = searchLoaded
+
     var liveSections: List<Section> = emptyList()
         private set
     var vodSections: List<Section> = emptyList()
@@ -69,6 +73,14 @@ object Catalog {
         private set
     var searchSeriesItems: List<Item> = emptyList()
         private set
+
+    /** Forget everything after a catalogue refresh so the next read picks it up. */
+    fun invalidate() {
+        synchronized(lock) {
+            homeLoaded = false
+            searchLoaded = false
+        }
+    }
 
     fun ensureHome(context: Context) {
         if (homeLoaded) return
@@ -99,7 +111,12 @@ object Catalog {
     }
 
     private fun load(context: Context, asset: String): List<Section> {
-        val text = context.assets.open(asset).bufferedReader().use { it.readText() }
+        val cached = CatalogSync.cacheFile(context, asset)
+        val text = if (cached.exists() && cached.length() > 0L) {
+            cached.readText()
+        } else {
+            context.assets.open(asset).bufferedReader().use { it.readText() }
+        }
         val root = JSONObject(text)
         val categories = root.getJSONArray("categories")
         val items = root.getJSONArray("items")

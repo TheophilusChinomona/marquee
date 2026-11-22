@@ -1,7 +1,7 @@
 {
-  "versionCode": 6,
-  "versionName": "1.5",
+  "versionCode": 7,
+  "versionName": "1.6",
   "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk",
-  "sha256": "502e960cedf4d6ad4cc4af71b819369893b1bc85cd5b9268293dccc68809c5bd",
-  "notes": "Marquee 1.5: in-app updates, new wordmark identity, series resume fix."
+  "sha256": "23530d1d367c0c4ab8decc9b48fb683f2bc54a82d7f493eadd4782f689b50362",
+  "notes": "Marquee 1.6: refreshed catalogue, wider recommendations, next-episode autoplay, cleaner categories and a new search."
 }

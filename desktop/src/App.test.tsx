@@ -118,7 +118,7 @@ test('profiles flow creates and activates profiles and protects the last profile
   };
 
   render(<NativeApp api={api} />);
-  fireEvent.click(await screen.findByRole('button', { name: /Theo/i }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Profile menu (Theo)' }));
   fireEvent.click(screen.getByRole('menuitem', { name: /Switch profile/i }));
 
   expect(await screen.findByText('Who’s watching?')).toBeTruthy();

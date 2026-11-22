@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 /**
  * Tracks a monotonically increasing request token so stale async responses
@@ -29,5 +29,5 @@ export function useLatestRequest() {
     tokenRef.current += 1;
   }, []);
 
-  return { begin, isCurrent, invalidate };
+  return useMemo(() => ({ begin, isCurrent, invalidate }), [begin, isCurrent, invalidate]);
 }

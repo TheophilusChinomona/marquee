@@ -4,6 +4,7 @@ mod credentials;
 mod models;
 mod player;
 mod provider;
+mod recommendations;
 mod state;
 mod store;
 
@@ -90,6 +91,7 @@ pub fn run() {
             commands::catalog_refresh_cancel,
             commands::media_details,
             commands::epg_query,
+            commands::home_sections,
             commands::player_snapshot,
             commands::player_control
         ])

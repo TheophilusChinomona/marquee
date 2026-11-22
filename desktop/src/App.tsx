@@ -1,12 +1,27 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowRight, Check } from 'lucide-react';
+import { ArrowRight, Check, RefreshCw } from 'lucide-react';
 import { isNative, nativeApi } from './api/client';
-import type { AppSettings, Bootstrap, DesktopApi, Profile } from './api/types';
+import {
+  extractAppError,
+  type AppSettings,
+  type Bootstrap,
+  type CatalogProgressEvent,
+  type DesktopApi,
+  type MediaItem,
+  type MediaRef,
+  type Profile,
+} from './api/types';
 import Header, { type NavPage } from './components/Header';
 import { EmptyState } from './components/StatusView';
+import { mediaKey } from './components/TitleCard';
+import Browse from './features/Browse';
 import Connect from './features/Connect';
+import Details from './features/Details';
+import Home from './features/Home';
+import MyList from './features/MyList';
 import NativePlayer from './features/NativePlayer';
 import Profiles from './features/Profiles';
+import Search from './features/Search';
 import Settings from './features/Settings';
 import './App.css';
 
@@ -17,18 +32,34 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<NavPage>('Home');
+  const [selectedRef, setSelectedRef] = useState<MediaRef | null>(null);
   const [settingsTab, setSettingsTab] = useState('General');
   const [profileMenu, setProfileMenu] = useState(false);
   const [toast, setToast] = useState('');
+  const [savedKeys, setSavedKeys] = useState<Set<string>>(() => new Set());
+  const [listVersion, setListVersion] = useState(0);
+  const [refreshStamp, setRefreshStamp] = useState(0);
+  const [refreshProgress, setRefreshProgress] = useState<CatalogProgressEvent | null>(null);
+  const activeRefreshIdRef = useRef<string | null>(null);
   const scroller = useRef<HTMLElement>(null);
 
   const notify = useCallback((message: string) => setToast(message), []);
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(''), 3000);
+    const t = setTimeout(() => setToast(''), 3200);
     return () => clearTimeout(t);
   }, [toast]);
+
+  const loadFavoritesSnapshot = useCallback(async () => {
+    if (!api.favoritesList) return;
+    try {
+      const res = await api.favoritesList({ offset: 0, limit: 200 });
+      setSavedKeys(new Set(res.items.map((item) => mediaKey(item.ref))));
+    } catch {
+      setSavedKeys(new Set());
+    }
+  }, [api]);
 
   const loadBootstrap = useCallback(async () => {
     setFailed(false);
@@ -38,10 +69,13 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       if (!value.connected && !value.cacheStatus?.hasCatalogue) {
         setPage('Connect');
       }
+      if (value.activeProviderId && value.activeProfileId) {
+        await loadFavoritesSnapshot();
+      }
     } catch {
       setFailed(true);
     }
-  }, [api]);
+  }, [api, loadFavoritesSnapshot]);
 
   useEffect(() => {
     let active = true;
@@ -54,6 +88,9 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         if (!value.connected && !value.cacheStatus?.hasCatalogue) {
           setPage('Connect');
         }
+        if (value.activeProviderId && value.activeProfileId) {
+          void loadFavoritesSnapshot();
+        }
       })
       .catch(() => {
         if (active) setFailed(true);
@@ -61,21 +98,117 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     return () => {
       active = false;
     };
-  }, [api, attempt]);
+  }, [api, attempt, loadFavoritesSnapshot]);
+
+  // Subscribe to catalog-progress events before triggering refreshes, unlisten on teardown.
+  useEffect(() => {
+    if (!api.onCatalogProgress) return;
+    let disposed = false;
+    let unlistenFn: (() => void) | null = null;
+    api
+      .onCatalogProgress((ev) => {
+        if (disposed) return;
+        if (
+          activeRefreshIdRef.current &&
+          ev.refreshId &&
+          ev.refreshId !== activeRefreshIdRef.current &&
+          ev.status === 'running'
+        ) {
+          // Track latest refresh ID if backend initiated it
+          activeRefreshIdRef.current = ev.refreshId;
+        }
+        if (activeRefreshIdRef.current && ev.refreshId !== activeRefreshIdRef.current) {
+          return;
+        }
+        setRefreshProgress(ev);
+        if (ev.status === 'completed') {
+          setRefreshStamp((s) => s + 1);
+          void loadBootstrap();
+          notify('Library updated.');
+        } else if (ev.status === 'failed') {
+          notify(ev.error?.message ?? 'Library refresh failed. Keeping previous catalogue.');
+          void loadBootstrap();
+        }
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenFn = unlisten;
+        }
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlistenFn?.();
+    };
+  }, [api, loadBootstrap, notify]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        setSelectedRef(null);
         setProfileMenu(false);
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
+        setSelectedRef(null);
         setPage('Search');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const triggerRefresh = useCallback(async () => {
+    if (!api.catalogRefresh) {
+      notify('Library refresh is unavailable.');
+      return;
+    }
+    setState((prev) =>
+      prev ? { ...prev, cacheStatus: { ...prev.cacheStatus, refreshing: true } } : prev,
+    );
+    try {
+      const refreshId = await api.catalogRefresh();
+      activeRefreshIdRef.current = refreshId;
+      setRefreshStamp((s) => s + 1);
+      await loadBootstrap();
+    } catch (err) {
+      notify(extractAppError(err, 'Unable to refresh library.').message);
+      await loadBootstrap();
+    }
+  }, [api, loadBootstrap, notify]);
+
+  const handleToggleSave = useCallback(
+    async (item: MediaItem) => {
+      if (!api.favoriteSet) return;
+      const key = mediaKey(item.ref);
+      const currentlySaved = savedKeys.has(key);
+      const nextSaved = !currentlySaved;
+      setSavedKeys((prev) => {
+        const next = new Set(prev);
+        if (nextSaved) next.add(key);
+        else next.delete(key);
+        return next;
+      });
+      try {
+        await api.favoriteSet({ ref: item.ref, saved: nextSaved });
+        setListVersion((v) => v + 1);
+        setRefreshStamp((s) => s + 1);
+        notify(nextSaved ? 'Added to My List' : 'Removed from My List');
+      } catch (err) {
+        // Revert optimistic update on error
+        setSavedKeys((prev) => {
+          const next = new Set(prev);
+          if (currentlySaved) next.add(key);
+          else next.delete(key);
+          return next;
+        });
+        notify(extractAppError(err, 'Unable to update My List.').message);
+      }
+    },
+    [api, savedKeys, notify],
+  );
 
   if (state?.developmentPlayer) return <NativePlayer />;
 
@@ -111,17 +244,23 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
 
   function go(next: NavPage) {
     setPage(next);
+    setSelectedRef(null);
     setProfileMenu(false);
     scroller.current?.scrollTo({ top: 0 });
   }
 
   function handleConnected(next: Bootstrap) {
     setState(next);
+    setSelectedRef(null);
     setPage('Home');
+    void loadFavoritesSnapshot();
     if (next.credentialWarning) {
       notify(next.credentialWarning);
     } else {
       notify('Connected to provider.');
+    }
+    if (next.connected && (!next.cacheStatus.hasCatalogue || next.cacheStatus.stale)) {
+      void triggerRefresh();
     }
   }
 
@@ -131,11 +270,34 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     activated?: boolean,
   ) {
     setState((prev) => (prev ? { ...prev, profiles, activeProfileId } : prev));
+    setSelectedRef(null);
+    setListVersion((v) => v + 1);
+    setRefreshStamp((s) => s + 1);
+    void loadFavoritesSnapshot();
     if (activated) go('Home');
   }
 
   function handleSettingsChanged(settings: AppSettings) {
     setState((prev) => (prev ? { ...prev, settings } : prev));
+  }
+
+  function handleSelectItem(item: MediaItem) {
+    setSelectedRef(item.ref);
+    scroller.current?.scrollTo({ top: 0 });
+  }
+
+  function handleStartPlayback(ref: MediaRef, episodeId?: string, resume = true) {
+    if (!state?.connected) {
+      notify('Reconnect your provider to start playback.');
+      return;
+    }
+    if (!api.playerStart) {
+      notify('Playback is starting soon.');
+      return;
+    }
+    void api
+      .playerStart({ ref, episodeId, resume })
+      .catch((err) => notify(extractAppError(err, 'Unable to start playback.').message));
   }
 
   if (!hasAccountOrCache && page === 'Connect') {
@@ -163,7 +325,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     <div className="desktop-app">
       <Header
         page={page}
-        hasDetail={false}
+        hasDetail={Boolean(selectedRef)}
         activeProfile={activeProfile}
         profileMenuOpen={profileMenu}
         onToggleProfileMenu={() => setProfileMenu((v) => !v)}
@@ -187,8 +349,74 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         </div>
       )}
 
+      {refreshProgress && refreshProgress.status === 'running' && (
+        <div className="refresh-banner" role="status">
+          <RefreshCw size={14} />
+          <span>
+            Synchronizing {refreshProgress.stage}
+            {refreshProgress.totalCategories > 0
+              ? ` (${refreshProgress.completedCategories}/${refreshProgress.totalCategories})`
+              : '…'}
+          </span>
+        </div>
+      )}
+
       <main ref={scroller} className="main-scroll">
-        {page === 'Connect' ? (
+        {selectedRef ? (
+          <Details
+            api={api}
+            itemRef={selectedRef}
+            backLabel={page === 'Home' ? 'browse' : page.toLowerCase()}
+            savedKeys={savedKeys}
+            onBack={() => setSelectedRef(null)}
+            onSelect={handleSelectItem}
+            onPlay={handleStartPlayback}
+            onToggleSave={(item) => void handleToggleSave(item)}
+          />
+        ) : page === 'Home' ? (
+          <Home
+            api={api}
+            profileId={state.activeProfileId}
+            refreshStamp={refreshStamp}
+            connected={state.connected}
+            savedKeys={savedKeys}
+            onSelect={handleSelectItem}
+            onPlay={(item, resume) => handleStartPlayback(item.ref, item.episodeId, resume)}
+            onToggleSave={(item) => void handleToggleSave(item)}
+            onNavigate={go}
+            onRefreshLibrary={() => void triggerRefresh()}
+          />
+        ) : page === 'Movies' || page === 'Series' ? (
+          <Browse
+            api={api}
+            kind={page === 'Series' ? 'series' : 'movie'}
+            dense={state.settings.compactLibrary}
+            refreshStamp={refreshStamp}
+            savedKeys={savedKeys}
+            onSelect={handleSelectItem}
+            onToggleSave={(item) => void handleToggleSave(item)}
+          />
+        ) : page === 'Search' ? (
+          <Search
+            api={api}
+            dense={state.settings.compactLibrary}
+            savedKeys={savedKeys}
+            onSelect={handleSelectItem}
+            onPlayLive={(item) => handleStartPlayback(item.ref, undefined, false)}
+            onToggleSave={(item) => void handleToggleSave(item)}
+          />
+        ) : page === 'My List' ? (
+          <MyList
+            api={api}
+            profileId={state.activeProfileId}
+            listVersion={listVersion}
+            dense={state.settings.compactLibrary}
+            savedKeys={savedKeys}
+            onSelect={handleSelectItem}
+            onToggleSave={(item) => void handleToggleSave(item)}
+            onExploreMovies={() => go('Movies')}
+          />
+        ) : page === 'Connect' ? (
           <Connect
             api={api}
             initialUrl={state.providerUrl}
@@ -209,9 +437,10 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             api={api}
             bootstrap={state}
             initialTab={settingsTab}
+            refreshProgress={refreshProgress}
             onGoProfiles={() => go('Profiles')}
             onGoConnect={() => go('Connect')}
-            onRefreshLibrary={() => notify('Catalogue synchronization is next.')}
+            onRefreshLibrary={() => void triggerRefresh()}
             onDisconnected={() => void loadBootstrap()}
             onSettingsChanged={handleSettingsChanged}
             onNotify={notify}
@@ -219,13 +448,10 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         ) : (
           <section className="section-pad">
             <EmptyState
-              title="Ready to synchronize your library"
-              description="Your provider account is connected. Refresh to load movies, series, and live channels."
-              action="Open provider settings"
-              onAction={() => {
-                setSettingsTab('Provider');
-                go('Settings');
-              }}
+              title="Live TV guide"
+              description="Browse channels and live schedules once connected."
+              action="Refresh library"
+              onAction={() => void triggerRefresh()}
             />
           </section>
         )}

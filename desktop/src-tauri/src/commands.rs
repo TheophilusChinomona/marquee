@@ -1,10 +1,11 @@
 use crate::{
     catalog::CatalogService,
     models::{
-        AppError, AppSettings, Bootstrap, Category, EpgQueryResponse, HistoryItem, MediaDetails,
-        MediaItem, MediaKind, MediaRef, Page, Profile,
+        AppError, AppSettings, Bootstrap, Category, EpgQueryResponse, HistoryItem,
+        HomeSectionsResponse, MediaDetails, MediaItem, MediaKind, MediaRef, Page, Profile,
     },
     player::service::{PlayerCommand, PlayerService, PlayerSnapshot},
+    recommendations,
     state::AppState,
 };
 use serde::Deserialize;
@@ -284,6 +285,15 @@ pub async fn epg_query(
     catalog
         .epg_query(&state, &args.channel_ids, args.from_ms, args.to_ms)
         .await
+}
+
+#[tauri::command]
+pub fn home_sections(state: tauri::State<'_, AppState>) -> Result<HomeSectionsResponse, AppError> {
+    let (provider_id, profile_id) = state.active_scope()?;
+    let refreshing = state.refreshing.load(std::sync::atomic::Ordering::Relaxed);
+    state.with_store(|s| {
+        recommendations::build_home_sections(s, &provider_id, &profile_id, refreshing)
+    })
 }
 
 #[tauri::command]

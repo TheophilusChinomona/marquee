@@ -73,8 +73,11 @@ export default function Header({
             className="profile-trigger"
             onClick={onToggleProfileMenu}
             aria-expanded={profileMenuOpen}
+            aria-label={`Profile menu (${profileName})`}
           >
-            <span className="mini-avatar">{profileName.slice(0, 1).toUpperCase()}</span>
+            <span className="mini-avatar" aria-hidden="true">
+              {profileName.slice(0, 1).toUpperCase()}
+            </span>
             <span>{profileName}</span>
             <ChevronDown size={13} />
           </button>

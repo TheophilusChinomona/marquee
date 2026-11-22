@@ -1,7 +1,7 @@
 {
-  "versionCode": 7,
-  "versionName": "1.6",
+  "versionCode": 8,
+  "versionName": "1.6.1",
   "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk",
-  "sha256": "23530d1d367c0c4ab8decc9b48fb683f2bc54a82d7f493eadd4782f689b50362",
-  "notes": "Marquee 1.6: refreshed catalogue, wider recommendations, next-episode autoplay, cleaner categories and a new search."
+  "sha256": "19e0356ca1813747766a25b1ec59fde91f857d4398a99a7bbb00a931ea6d6254",
+  "notes": "Marquee 1.6.1: fixes the progress line on Continue Watching cards running past the card."
 }

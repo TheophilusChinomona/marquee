@@ -409,9 +409,10 @@ private class MarqueeCardView(
         val p = card.progress
         progress.visibility = if (p != null) View.VISIBLE else View.GONE
         if (p != null) {
+            // Measure the card, not its parent: the parent is the whole rail, so the
+            // line used to run far past the poster it belongs to.
             progress.post {
-                val parentWidth = (parent as? View)?.width ?: width
-                val available = (parentWidth - dp(20)).coerceAtLeast(1)
+                val available = (width - dp(20)).coerceAtLeast(1)
                 val params = progress.layoutParams
                 params.width = (available * p.coerceIn(0f, 1f)).toInt()
                 progress.layoutParams = params

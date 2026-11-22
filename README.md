@@ -194,6 +194,16 @@ then offers the download. The APK is saved to the app cache, checked against `sh
 one is published, and handed to the Android TV installer — which always asks for
 confirmation. Nothing installs silently.
 
+Code merges into the default branch (`master`, or `main` if renamed) now run the
+release workflow: backend tests, signed APK build, then APK and SHA-256 manifest
+published together in a GitHub release. Future builds read the release's
+`version.json`; the root file remains a bootstrap for older installed versions.
+Each release increments `versionCode` and the patch version automatically, unless
+the prepared Gradle version is already newer. Documentation-only and bootstrap
+manifest changes do not publish another APK. A failed build leaves the previous
+release active. Signing material is stored in encrypted GitHub Actions secrets.
+Device playback/instrumentation checks remain separate from build verification.
+
 On Fire OS, allow it once: **Settings → My TV → Developer Options → Install unknown apps →
 Marquee → On**. An update must be signed with the same key as the installed build,
 otherwise Android rejects it.

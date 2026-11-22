@@ -28,6 +28,8 @@ data class AppUpdate(
 object UpdateChecker {
 
     private const val MANIFEST_URL =
+        "https://github.com/TheophilusChinomona/marquee/releases/latest/download/version.json"
+    private const val LEGACY_MANIFEST_URL =
         "https://raw.githubusercontent.com/TheophilusChinomona/marquee/master/version.json"
 
     fun installedVersionCode(context: Context): Long = runCatching {
@@ -36,7 +38,7 @@ object UpdateChecker {
     }.getOrDefault(0L)
 
     fun check(context: Context): AppUpdate? {
-        val text = fetch(MANIFEST_URL, bustCache = true) ?: return null
+        val text = fetch(MANIFEST_URL, bustCache = true) ?: fetch(LEGACY_MANIFEST_URL, bustCache = true) ?: return null
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val code = json.optLong("versionCode", 0L)
         val url = json.optString("apkUrl").trim()

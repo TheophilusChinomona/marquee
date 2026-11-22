@@ -1,0 +1,85 @@
+name: Build and publish Android update
+on:
+  push:
+    branches: [master, main]
+    paths-ignore: ['version.json', 'docs/**', '**.md']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Verify backend and version selection
+        run: |
+          npm ci --omit=dev --prefix resolver
+          node --test resolver/test/*.test.js scripts/release-version.test.cjs
+      - name: Select monotonic release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release view --json tagName > release/latest.json
+          if ! gh release download --pattern version.json --dir release; then
+            node -e 'const fs=require("fs");const latest=JSON.parse(fs.readFileSync("release/latest.json"));const legacy=require("./version.json");if(latest.tagName!=="v"+legacy.versionName)throw Error("Latest manifest unavailable; refusing unsafe version fallback");fs.copyFileSync("version.json","release/version.json");'
+          fi
+          node scripts/release-version.cjs release/version.json
+      - name: Restore existing signing identity
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          python3 - <<'PY'
+          import os, base64
+          from pathlib import Path
+          for key in ['KEYSTORE_BASE64','STORE_PASSWORD','KEY_ALIAS','KEY_PASSWORD']:
+              if not os.environ.get(key): raise RuntimeError('Missing signing secret: '+key)
+          Path('firetv-player/release-ci.keystore').write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64']))
+          def escape(v): return v.replace('\\','\\\\').replace('\n','\\n').replace('\r','\\r')
+          props={'storeFile':'release-ci.keystore','storePassword':os.environ['STORE_PASSWORD'],'keyAlias':os.environ['KEY_ALIAS'],'keyPassword':os.environ['KEY_PASSWORD']}
+          Path('firetv-player/keystore.properties').write_text('\n'.join(k+'='+escape(v) for k,v in props.items()))
+          PY
+      - name: Build signed release and instrumentation APK
+        working-directory: firetv-player
+        run: |
+          bash gradlew :app:assembleRelease :app:assembleReleaseAndroidTest -PreleaseVersionCode=${{ steps.version.outputs.code }} -PreleaseVersionName=${{ steps.version.outputs.name }} --no-daemon
+      - name: Prepare immutable updater manifest
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          cp firetv-player/app/build/outputs/apk/release/app-release.apk release/Marquee.apk
+          node - <<'JS'
+          const fs=require('fs'),crypto=require('crypto');
+          const manifest={versionCode:Number(process.env.VERSION_CODE),versionName:process.env.VERSION_NAME,apkUrl:`https://github.com/${process.env.GH_REPO}/releases/download/${process.env.RELEASE_TAG}/Marquee.apk`,sha256:crypto.createHash('sha256').update(fs.readFileSync('release/Marquee.apk')).digest('hex'),notes:`Marquee ${process.env.VERSION_NAME}: updates from the default branch. Native TV verification is separate from CI builds.`};
+          fs.writeFileSync('release/version.json',JSON.stringify(manifest,null,2)+'\n');
+          JS
+      - name: Publish APK and manifest together
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" release/Marquee.apk release/version.json --target "$GITHUB_SHA" --draft --title "Marquee $RELEASE_TAG" --notes "Automatic signed Android release from the default branch. Backend and version tests pass and Android release/test APKs compile. Device instrumentation and memory soak are separate checks; see the change history for validation details."
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+      - name: Remove signing material
+        if: always()
+        run: rm -f firetv-player/release-ci.keystore firetv-player/keystore.properties

@@ -16,7 +16,7 @@ pub fn create(window: &tauri::WebviewWindow) -> Result<u64, AppError> {
             0,
             class.as_ptr(),
             std::ptr::null(),
-            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            WS_CHILD | WS_CLIPSIBLINGS,
             0,
             80,
             1280,
@@ -34,8 +34,22 @@ pub fn create(window: &tauri::WebviewWindow) -> Result<u64, AppError> {
 }
 
 #[cfg(windows)]
+pub fn set_visible(surface: u64, visible: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    if surface == 0 {
+        return;
+    }
+    unsafe {
+        ShowWindow(surface as _, if visible { SW_SHOW } else { SW_HIDE });
+    }
+}
+
+#[cfg(windows)]
 pub fn resize(window: &tauri::WebviewWindow, surface: u64) {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    if surface == 0 {
+        return;
+    }
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
         let top = (80.0 * scale).round() as i32;
         let bottom = (180.0 * scale).round() as i32;
@@ -61,5 +75,9 @@ pub fn create(_: &tauri::WebviewWindow) -> Result<u64, AppError> {
         "Native video surface is not yet validated on this platform.",
     ))
 }
+
+#[cfg(not(windows))]
+pub fn set_visible(_: u64, _: bool) {}
+
 #[cfg(not(windows))]
 pub fn resize(_: &tauri::WebviewWindow, _: u64) {}

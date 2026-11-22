@@ -4,7 +4,10 @@ use crate::{
         AppError, AppSettings, Bootstrap, Category, EpgQueryResponse, HistoryItem,
         HomeSectionsResponse, MediaDetails, MediaItem, MediaKind, MediaRef, Page, Profile,
     },
-    player::service::{PlayerCommand, PlayerService, PlayerSnapshot},
+    player::{
+        service::PlayerService,
+        session::{PlayerControlCommand, PlayerSnapshot},
+    },
     recommendations,
     state::AppState,
 };
@@ -105,6 +108,20 @@ pub struct EpgQueryArgs {
     pub to_ms: i64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerStartArgs {
+    #[serde(rename = "ref")]
+    pub media_ref: MediaRef,
+    pub episode_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub resume: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[tauri::command]
 pub fn app_bootstrap(
     state: tauri::State<'_, AppState>,
@@ -117,12 +134,13 @@ pub fn app_bootstrap(
 
 #[tauri::command]
 pub async fn provider_connect(
+    app: tauri::AppHandle,
     args: ConnectArgs,
     state: tauri::State<'_, AppState>,
     catalog: tauri::State<'_, CatalogService>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<Bootstrap, AppError> {
-    let _ = player.control(PlayerCommand::Stop);
+    player.stop_and_save(&app, &state);
     catalog.cancel_active_refresh();
     catalog.clear_epg_cache();
     state
@@ -132,11 +150,12 @@ pub async fn provider_connect(
 
 #[tauri::command]
 pub async fn provider_disconnect(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     catalog: tauri::State<'_, CatalogService>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<(), AppError> {
-    let _ = player.control(PlayerCommand::Stop);
+    player.stop_and_save(&app, &state);
     catalog.cancel_active_refresh();
     catalog.clear_epg_cache();
     state.disconnect()
@@ -165,21 +184,23 @@ pub fn profile_update(
 
 #[tauri::command]
 pub fn profile_remove(
+    app: tauri::AppHandle,
     args: ProfileIdArgs,
     state: tauri::State<'_, AppState>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<String, AppError> {
-    let _ = player.control(PlayerCommand::Stop);
+    player.stop_and_save(&app, &state);
     state.profile_remove(&args.id)
 }
 
 #[tauri::command]
 pub fn profile_activate(
+    app: tauri::AppHandle,
     args: ProfileIdArgs,
     state: tauri::State<'_, AppState>,
     player: tauri::State<'_, PlayerService>,
 ) -> Result<(), AppError> {
-    let _ = player.control(PlayerCommand::Stop);
+    player.stop_and_save(&app, &state);
     state.profile_activate(&args.id)
 }
 
@@ -297,6 +318,26 @@ pub fn home_sections(state: tauri::State<'_, AppState>) -> Result<HomeSectionsRe
 }
 
 #[tauri::command]
+pub async fn player_start(
+    app: tauri::AppHandle,
+    args: PlayerStartArgs,
+    state: tauri::State<'_, AppState>,
+    catalog: tauri::State<'_, CatalogService>,
+    player: tauri::State<'_, PlayerService>,
+) -> Result<PlayerSnapshot, AppError> {
+    player
+        .start(
+            &app,
+            &state,
+            &catalog,
+            &args.media_ref,
+            args.episode_id.as_deref(),
+            args.resume,
+        )
+        .await
+}
+
+#[tauri::command]
 pub async fn player_snapshot(
     player: tauri::State<'_, PlayerService>,
 ) -> Result<PlayerSnapshot, AppError> {
@@ -305,8 +346,10 @@ pub async fn player_snapshot(
 
 #[tauri::command]
 pub async fn player_control(
-    command: PlayerCommand,
+    app: tauri::AppHandle,
+    command: PlayerControlCommand,
+    state: tauri::State<'_, AppState>,
     player: tauri::State<'_, PlayerService>,
-) -> Result<(), AppError> {
-    player.control(command)
+) -> Result<PlayerSnapshot, AppError> {
+    player.control(&app, &state, command)
 }

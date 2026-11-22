@@ -9,6 +9,7 @@ import {
   type DesktopApi,
   type MediaItem,
   type MediaRef,
+  type PlayerSnapshot,
   type Profile,
 } from './api/types';
 import Header, { type NavPage } from './components/Header';
@@ -20,6 +21,7 @@ import Details from './features/Details';
 import Home from './features/Home';
 import MyList from './features/MyList';
 import NativePlayer from './features/NativePlayer';
+import Player from './features/Player';
 import Profiles from './features/Profiles';
 import Search from './features/Search';
 import Settings from './features/Settings';
@@ -40,6 +42,12 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   const [listVersion, setListVersion] = useState(0);
   const [refreshStamp, setRefreshStamp] = useState(0);
   const [refreshProgress, setRefreshProgress] = useState<CatalogProgressEvent | null>(null);
+  const [activePlayer, setActivePlayer] = useState<PlayerSnapshot | null>(null);
+  const [lastPlayArgs, setLastPlayArgs] = useState<{
+    ref: MediaRef;
+    episodeId?: string;
+    resume: boolean;
+  } | null>(null);
   const activeRefreshIdRef = useRef<string | null>(null);
   const scroller = useRef<HTMLElement>(null);
 
@@ -90,6 +98,16 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         }
         if (value.activeProviderId && value.activeProfileId) {
           void loadFavoritesSnapshot();
+        }
+        if (api.playerSnapshot) {
+          void api
+            .playerSnapshot()
+            .then((snap) => {
+              if (active && snap.media && snap.status !== 'stopped') {
+                setActivePlayer(snap);
+              }
+            })
+            .catch(() => {});
         }
       })
       .catch(() => {
@@ -146,6 +164,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (activePlayer) return;
       if (event.key === 'Escape') {
         setSelectedRef(null);
         setProfileMenu(false);
@@ -158,7 +177,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [activePlayer]);
 
   const triggerRefresh = useCallback(async () => {
     if (!api.catalogRefresh) {
@@ -292,11 +311,15 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       return;
     }
     if (!api.playerStart) {
-      notify('Playback is starting soon.');
+      notify('Playback is unavailable in this mode.');
       return;
     }
+    setLastPlayArgs({ ref, episodeId, resume });
     void api
       .playerStart({ ref, episodeId, resume })
+      .then((snap) => {
+        setActivePlayer(snap);
+      })
       .catch((err) => notify(extractAppError(err, 'Unable to start playback.').message));
   }
 
@@ -481,6 +504,22 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
           <Check size={17} />
           {toast}
         </div>
+      )}
+
+      {activePlayer && (
+        <Player
+          api={api}
+          initialSnapshot={activePlayer}
+          onClose={() => {
+            setActivePlayer(null);
+            setRefreshStamp((s) => s + 1);
+          }}
+          onRetry={() => {
+            if (lastPlayArgs) {
+              handleStartPlayback(lastPlayArgs.ref, lastPlayArgs.episodeId, true);
+            }
+          }}
+        />
       )}
     </div>
   );

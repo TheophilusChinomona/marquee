@@ -10,6 +10,7 @@ mod store;
 
 use catalog::CatalogService;
 use player::service::PlayerService;
+use std::sync::atomic::Ordering;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -36,8 +37,8 @@ pub fn run() {
                     .get_webview_window("main")
                     .ok_or("main window missing")?;
                 let surface = player::surface::create(&window).map_err(|e| e.message)?;
-                let runtime = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("resources/mpv/libmpv-2.dll");
+                player::surface::set_visible(surface, true);
+                let runtime = player::resolve_runtime_path(app.path().resource_dir().ok().as_deref());
                 let engine =
                     player::NativePlayer::open(&runtime, surface).map_err(|e| e.message)?;
                 engine
@@ -46,10 +47,14 @@ pub fn run() {
                 engine
                     .load(&source.to_string_lossy(), 0)
                     .map_err(|e| e.message)?;
-                *app.state::<PlayerService>()
-                    .0
+                let player_state = app.state::<PlayerService>();
+                player_state.surface_handle.store(surface, Ordering::SeqCst);
+                player_state.development_smoke.store(true, Ordering::SeqCst);
+                player_state
+                    .controller
                     .lock()
-                    .map_err(|_| "player lock")? = Some(engine);
+                    .map_err(|_| "player lock")?
+                    .set_engine(Box::new(engine));
                 player::surface::resize(&window, surface);
                 let resize_window = window.clone();
                 window.on_window_event(move |event| {
@@ -67,9 +72,8 @@ pub fn run() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
                 window.state::<CatalogService>().cancel_active_refresh();
-                if let Ok(mut player) = window.state::<PlayerService>().0.lock() {
-                    player.take();
-                }
+                let app_state = window.state::<state::AppState>();
+                window.state::<PlayerService>().shutdown(&app_state);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -92,6 +96,7 @@ pub fn run() {
             commands::media_details,
             commands::epg_query,
             commands::home_sections,
+            commands::player_start,
             commands::player_snapshot,
             commands::player_control
         ])

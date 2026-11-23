@@ -1,5 +1,51 @@
 # Desktop Validation Record
 
+## 2026-11-23 — Online playback across networks (IP-bound CDN links)
+
+### Symptom
+Online titles resolved successfully but the native player showed "Playback failed or stream connection was lost." Live/IP TV movies played, so the player itself worked.
+
+### Root cause (not a client bug)
+Signed CDN links minted by the resolver only answer the **public IP that minted them**. Verified directly: resolving "Interstellar" on the resolver host (`omarchy`, egress `197.89.163.20`) returned `status:206`, and fetching that exact URL from the development Windows box (egress `45.220.15.46`, on a hotspot SSID, not the home LAN) returned **403** — same URL, same `Referer`, same User-Agent, same `Range`, with and without a referer.
+
+### Fix
+- **Resolver:** `/resolve` now also returns `streamUrl`, a same-origin `/stream?t=<hmac>` link. `/stream` relays the video bytes from the resolver (the minting IP) with Range passthrough, so seeking works from any network. The token is an HMAC over the upstream URL (not an open proxy); `RESOLVER_STREAM_SECRET` keeps links valid across restarts. `/stream` is self-authenticating and bypasses the bearer token and coarse rate limiter (video makes many Range requests).
+- **Desktop client (`online.rs`):** `resolve` prefers `streamUrl`, re-rooting its path onto the connected base (LAN, Tailscale, or tunnel, preserving any `/t/<token>/` prefix) and dropping the upstream referer so the resolver applies it.
+
+### Verified
+- From the Windows box over Tailscale (`http://100.79.149.69:8099`): `resolve` → `streamUrl` → **206 `video/mp4`** at offset 0 and at a 50 MB offset. This is the same network and URL that returned 403 before the fix.
+- Forged `/stream?t=…` token → **400**.
+- `cargo test --locked` 35 passed; `cargo fmt --check` and `cargo clippy -D warnings` clean.
+- Live smoke test against the Tailscale URL with resolve enabled passes using the client's `streamUrl` path.
+
+### Operating note
+The raw `url` still only plays from the minting network. The desktop app uses `streamUrl`, which works anywhere but relays video through the resolver host (its upstream bandwidth carries the stream). On the home LAN the resolver can be reached directly and either URL works.
+
+## 2026-11-23 — Online Library integration (standalone resolver)
+
+### Scope
+Added an independent **Online Library** connection to the desktop app: sign in with a resolver URL + Cloudflare Access service token, search movies/series, open details, save to My List, resume, and play movies/series through the existing embedded libmpv player. No IPTV account is required for any of this; IPTV paths and UI are unchanged.
+
+### Automated Verification Results
+- **Rust formatting / linting (`cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`):** Passed, zero warnings.
+- **Rust tests (`cargo test --locked`):** 33 passed, 2 ignored. Online-specific coverage:
+  - Origin/identity validation and title-ID namespacing (`online:<sha256>:<upstream>`), including cross-resolver rejection.
+  - HTTP authentication with Cloudflare Access headers, redirect refusal (no credential-carrying redirects), and sanitized unauthorized responses.
+  - Metadata mapping for movies and series seasons/episodes without signed URLs.
+  - Locked keyring reports session-only and never writes credentials to SQLite; remembered login restores on reopen; failed authentication preserves the previous working connection.
+  - Saved online titles survive reopen, stay isolated by profile and resolver scope, and do not replace an active IPTV account.
+  - Playback controller: deferred online next/previous/select/autoplay resolves fresh URLs, saves completion, requires a new URL per episode visit, and rejects stale transition results while reporting `resolving`.
+- **Frontend tests (`npm test -- --run`):** 15 passed across 5 files, including 4 new online tests: online-only bootstrap opens search-led Home without triggering an IPTV sync; the setup form connects via online credentials, clears the secret from the form, and reaches Home; a late response for an old online query cannot replace current results; reconnect opens the online form.
+- **Production bundle (`npm run build`):** Passed (`tsc && vite build`).
+
+### Live Resolver Smoke Test
+- `cargo test --locked live_resolver -- --ignored --nocapture` with `MARQUEE_RESOLVER_SMOKE_URL=https://resolver.sentiolangley.com/` and credentials imported from the main checkout `.env` — **passed** for authenticated health, search, and title details. Stream resolution was tested separately and returned HTTP 502 for the selected movie; end-to-end movie playback is not yet verified. No credentials or signed URLs were printed.
+
+### Native verification
+- Windows debug executable built with `cargo build --locked --features tauri/custom-protocol` and a native frontend bundle (`npm run build:native`).
+- Native Windows app launched and rendered the existing real library. Settings exposes the Online Library tab. The explicit pinned mpv initialization/shutdown test passed.
+- Online setup/search/reconnect are covered by frontend flow tests. End-to-end online video playback is unverified because the tested live resolver /resolve request returned HTTP 502. Linux display verification remains pending.
+
 ## 2026-11-23 — Windows x86-64 development host
 
 ### Environment & Versions

@@ -39,7 +39,7 @@ interface PlayerProps {
   api: DesktopApi;
   initialSnapshot: PlayerSnapshot;
   onClose: () => void;
-  onRetry: () => void;
+  onRetry: (snapshot: PlayerSnapshot) => void;
 }
 
 export default function Player({ api, initialSnapshot, onClose, onRetry }: PlayerProps) {
@@ -101,11 +101,45 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
     [api],
   );
 
+  const [fullscreen, setFullscreen] = useState(false);
+
+  const syncFullscreen = useCallback(async () => {
+    try {
+      setFullscreen(await getCurrentWindow().isFullscreen());
+    } catch {
+      // Non-native test environment
+    }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void syncFullscreen();
+    try {
+      getCurrentWindow()
+        .onResized(() => {
+          if (!disposed) void syncFullscreen();
+        })
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        })
+        .catch(() => {});
+    } catch {
+      // Non-native test environment
+    }
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [syncFullscreen]);
+
   const toggleFullscreen = useCallback(async () => {
     try {
       const win = getCurrentWindow();
-      const full = await win.isFullscreen();
-      await win.setFullscreen(!full);
+      const next = !(await win.isFullscreen());
+      await win.setFullscreen(next);
+      setFullscreen(next);
     } catch {
       // Non-native test environment
     }
@@ -161,7 +195,9 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
         void toggleFullscreen();
       } else if (e.key === 'Escape') {
         e.preventDefault();
-        if (panel) {
+        if (fullscreen) {
+          void toggleFullscreen();
+        } else if (panel) {
           togglePanel(null);
         } else {
           void handleClose();
@@ -170,10 +206,14 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [canSeek, handleClose, isPaused, panel, sendControl, snapshot.muted, toggleFullscreen, togglePanel]);
+  }, [canSeek, fullscreen, handleClose, isPaused, panel, sendControl, snapshot.muted, toggleFullscreen, togglePanel]);
 
   return (
-    <div className="native-player-shell" role="dialog" aria-label="Video player">
+    <div
+      className={`native-player-shell${fullscreen ? ' is-fullscreen' : ''}`}
+      role="dialog"
+      aria-label="Video player"
+    >
       <header className="native-player-top">
         <button type="button" className="player-back" onClick={() => void handleClose()}>
           <ArrowLeft size={21} />
@@ -189,9 +229,9 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
       </header>
 
       <div className="native-player-stage" aria-label="Embedded native video">
-        {(snapshot.status === 'loading' || snapshot.status === 'buffering') && (
+        {(snapshot.status === 'loading' || snapshot.status === 'buffering' || snapshot.status === 'resolving') && (
           <div className="player-status-overlay" role="status">
-            <p>{snapshot.status === 'loading' ? 'Starting stream…' : 'Buffering…'}</p>
+            <p>{snapshot.status === 'resolving' ? 'Resolving next stream…' : snapshot.status === 'loading' ? 'Starting stream…' : 'Buffering…'}</p>
           </div>
         )}
         {snapshot.status === 'error' && (
@@ -201,7 +241,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
               type="button"
               className="button primary compact"
               style={{ marginTop: 12 }}
-              onClick={onRetry}
+              onClick={() => onRetry(snapshot)}
             >
               <RefreshCw size={14} /> Retry playback
             </button>

@@ -15,6 +15,7 @@ export type NavPage =
 const MAIN_NAV: NavPage[] = ['Home', 'Movies', 'Series', 'Live TV', 'My List'];
 
 interface HeaderProps {
+  iptvAvailable?: boolean;
   page: NavPage;
   hasDetail: boolean;
   activeProfile?: Profile;
@@ -24,6 +25,7 @@ interface HeaderProps {
 }
 
 export default function Header({
+  iptvAvailable = true,
   page,
   hasDetail,
   activeProfile,
@@ -44,7 +46,7 @@ export default function Header({
         <span />
       </button>
       <nav aria-label="Main navigation">
-        {MAIN_NAV.map((item) => (
+        {MAIN_NAV.filter((item) => iptvAvailable || !['Movies', 'Series', 'Live TV'].includes(item)).map((item) => (
           <button
             type="button"
             key={item}

@@ -39,3 +39,14 @@
 .virtual-spacer{width:100%;pointer-events:none}
 .native-player-shell{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;background:transparent;color:#eee}.native-player-top{height:80px;flex-shrink:0;background:#0b0b0df2;border-bottom:1px solid #ffffff10;padding:0 32px;display:flex;align-items:center;justify-content:space-between;gap:16px}.native-player-stage{flex:1;min-height:1px;position:relative;display:flex;align-items:center;justify-content:center;pointer-events:none}.native-player-stage .player-status-overlay{pointer-events:auto;background:#0b0b0de8;border:1px solid #ffffff1a;border-radius:8px;padding:18px 24px;text-align:center;max-width:440px}.native-player-bottom{height:180px;flex-shrink:0;background:#0b0b0df6;border-top:1px solid #ffffff10;padding:16px 32px;display:flex;flex-direction:column;justify-content:space-between}.native-player-bottom .player-timeline{margin-top:8px}.native-player-bottom .player-title{display:flex;align-items:baseline;gap:14px}.native-player-bottom .player-title h1{font-size:20px;margin:0}.native-player-bottom .player-title p{margin:0;font-size:11px;color:#9c9ca6}
 
+
+.connect-page { gap: 24px; }
+.connect-page > .chips { max-width: 400px; margin: 0 auto; justify-content: center; }
+.online-library-banner { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding-top: 32px; }
+.online-library-banner p { color: var(--muted); margin: 8px 0; }
+.resolving-overlay { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(0,0,0,.8); color: white; font-size: 20px; }
+/* Fullscreen: collapse the React chrome so the native video surface fills the whole window. */
+.native-player-shell.is-fullscreen { background: transparent; }
+.native-player-shell.is-fullscreen .native-player-top,
+.native-player-shell.is-fullscreen .native-player-bottom { display: none; }
+.native-player-shell.is-fullscreen .native-player-stage { position: absolute; inset: 0; }

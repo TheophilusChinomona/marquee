@@ -5,6 +5,7 @@ import {
   type DesktopApi,
   type HomeSectionsResponse,
   type MediaItem,
+  type OnlineStatus,
 } from '../api/types';
 import Rail from '../components/Rail';
 import { EmptyState, ErrorBanner } from '../components/StatusView';
@@ -17,6 +18,7 @@ interface HomeProps {
   profileId: string | null;
   refreshStamp: number;
   connected: boolean;
+  online?: OnlineStatus;
   savedKeys: Set<string>;
   onSelect: (item: MediaItem) => void;
   onPlay: (item: MediaItem, resume: boolean) => void;
@@ -30,6 +32,7 @@ export default function Home({
   profileId,
   refreshStamp,
   connected,
+  online,
   savedKeys,
   onSelect,
   onPlay,
@@ -94,6 +97,14 @@ export default function Home({
   }
 
   const hasItems = Boolean(data && (data.hero.length > 0 || data.sections.length > 0));
+  if (!hasItems && online?.baseUrl) {
+    return <section className="section-pad"><EmptyState
+      title={online.connected ? 'Find something to watch online' : 'Reconnect your online library'}
+      description={online.connected ? 'Search for a movie or series, then settle in. Save favourites to build your library.' : 'Your saved titles and watch progress stay here. Reconnect to search and watch.'}
+      action={online.connected ? 'Search online library' : 'Connect online library'}
+      onAction={() => onNavigate(online.connected ? 'Search' : 'Connect')}
+    /></section>;
+  }
   if (!hasItems) {
     return (
       <section className="section-pad">
@@ -126,6 +137,7 @@ export default function Home({
 
   return (
     <>
+      {online?.baseUrl && <div className="section-pad online-library-banner"><div><strong>Online Library</strong><p>{online.connected ? 'Find more movies and series by title.' : 'Reconnect your online library to watch saved titles.'}</p></div><button className="button secondary compact" type="button" onClick={() => onNavigate(online.connected ? 'Search' : 'Connect')}>{online.connected ? 'Search online library' : 'Reconnect online library'}</button></div>}
       {error && (
         <div className="section-pad" style={{ paddingTop: 18 }}>
           <ErrorBanner message={error} retryable onRetry={() => setReloadCount((c) => c + 1)} />
@@ -247,7 +259,7 @@ export default function Home({
                     : undefined
             }
           />
-          {idx === 1 && (
+          {idx === 1 && connected && (
             <section className="live-banner section-pad">
               <div className="live-banner-inner">
                 <span className="live-icon">

@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Default)]
 pub struct PlayerService {
+    start_generation: AtomicU64,
     pub controller: Mutex<SessionController>,
     init_lock: Mutex<()>,
     pub surface_handle: AtomicU64,
@@ -179,6 +180,67 @@ impl PlayerService {
                         },
                     );
                 }
+                let pending = player
+                    .controller
+                    .lock()
+                    .ok()
+                    .and_then(|mut ctrl| ctrl.take_pending_episode());
+                if let Some(pending) = pending {
+                    let transition_app = app_handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = transition_app.state::<AppState>();
+                        let player = transition_app.state::<PlayerService>();
+                        let session = state.online.session();
+                        let result = match &session {
+                            Ok((session, _)) if session.scope() == pending.provider_id => {
+                                session.resolve(&pending.episode_id).await
+                            }
+                            _ => Err(AppError::unauthenticated(
+                                "Reconnect the online library to continue playback.",
+                            )),
+                        };
+                        let _gate = state.change_gate.lock().await;
+                        let current = session.as_ref().is_ok_and(|(session, generation)| {
+                            state.online.is_current(&session.scope(), *generation)
+                        }) && state
+                            .with_store(|s| {
+                                Ok(s.active_profile()?.as_deref()
+                                    == Some(pending.profile_id.as_str()))
+                            })
+                            .unwrap_or(false)
+                            && state.online_scope_for(&pending.media_ref).is_ok();
+                        if let Ok(mut ctrl) = player.controller.lock() {
+                            if current {
+                                match result {
+                                    Ok(resolved) => {
+                                        if let Err(error) = ctrl.finish_pending_episode(
+                                            &pending,
+                                            &resolved.url,
+                                            resolved.referer.as_deref(),
+                                            now_ms(),
+                                        ) {
+                                            ctrl.fail_pending_episode(&pending, error);
+                                        }
+                                    }
+                                    Err(error) => ctrl.fail_pending_episode(&pending, error),
+                                }
+                            } else {
+                                ctrl.fail_pending_episode(&pending, AppError::unauthenticated("Account or profile changed before playback could continue."));
+                            }
+                            let snap = ctrl.snapshot();
+                            let show = ctrl.should_show_surface();
+                            drop(ctrl);
+                            player.sync_surface_visibility(&transition_app, show);
+                            let _ = transition_app.emit(
+                                "player-state",
+                                PlayerStateEvent {
+                                    session_id: snap.session_id.clone(),
+                                    snapshot: snap,
+                                },
+                            );
+                        }
+                    });
+                }
             }
         });
     }
@@ -192,6 +254,12 @@ impl PlayerService {
         episode_id: Option<&str>,
         resume: bool,
     ) -> Result<PlayerSnapshot, AppError> {
+        if crate::online::is_online(&media_ref.id) {
+            return self
+                .start_online(app, state, media_ref, episode_id, resume)
+                .await;
+        }
+        let request = self.start_generation.fetch_add(1, Ordering::SeqCst) + 1;
         let (session, provider_id) = state.require_session()?;
         let (active_prov, profile_id) = state.active_scope()?;
         if active_prov != provider_id {
@@ -207,6 +275,7 @@ impl PlayerService {
         // Re-verify active provider and profile after async network resolution.
         let (post_prov, post_profile) = state.active_scope()?;
         if post_prov != provider_id
+            || self.start_generation.load(Ordering::SeqCst) != request
             || post_profile != profile_id
             || state.active_session_for_provider(&provider_id)?.is_none()
         {
@@ -260,6 +329,7 @@ impl PlayerService {
                 .controller
                 .lock()
                 .map_err(|_| AppError::player("Player state unavailable."))?;
+            ctrl.set_referer(None)?;
             let snap = state.with_store(|store| {
                 ctrl.start(
                     StartSessionRequest {
@@ -294,12 +364,160 @@ impl PlayerService {
         Ok(snap)
     }
 
+    async fn start_online(
+        &self,
+        app: &AppHandle,
+        state: &AppState,
+        media_ref: &MediaRef,
+        episode_id: Option<&str>,
+        resume: bool,
+    ) -> Result<PlayerSnapshot, AppError> {
+        let request = self.start_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let scope = state.online_scope_for(media_ref)?;
+        let profile = state
+            .with_store(|s| s.active_profile())?
+            .ok_or_else(|| AppError::validation("Select a profile."))?;
+        let (session, generation) = state.online.session()?;
+        if session.scope() != scope {
+            return Err(AppError::unauthenticated(
+                "Online library changed. Please retry.",
+            ));
+        }
+        let details = state.online_details(media_ref).await?;
+        let episodes: Vec<_> = details
+            .seasons
+            .iter()
+            .flatten()
+            .flat_map(|s| &s.episodes)
+            .collect();
+        let target = if media_ref.kind == MediaKind::Series {
+            episode_id
+                .or(if resume {
+                    details.resume_episode_id.as_deref()
+                } else {
+                    None
+                })
+                .or_else(|| episodes.first().map(|ep| ep.id.as_str()))
+        } else {
+            None
+        };
+        let episode = if media_ref.kind == MediaKind::Series {
+            Some(
+                episodes
+                    .iter()
+                    .find(|ep| Some(ep.id.as_str()) == target)
+                    .ok_or_else(|| {
+                        AppError::validation("This series has no matching playable episode.")
+                    })?,
+            )
+        } else {
+            None
+        };
+        let resolved = session.resolve(target.unwrap_or(&media_ref.id)).await?;
+        let _gate = state.change_gate.lock().await;
+        if self.start_generation.load(Ordering::SeqCst) != request
+            || !state.online.is_current(&scope, generation)
+            || state.with_store(|s| s.active_profile())?.as_deref() != Some(profile.as_str())
+        {
+            return Err(AppError::unauthenticated(
+                "Account, profile, or playback request changed. Please retry.",
+            ));
+        }
+        let (settings, start_ms) = state.with_store(|s| {
+            let position = if resume {
+                s.item_history_entries(&scope, &profile, media_ref.kind, &media_ref.id)?
+                    .iter()
+                    .find(|h| !h.completed && h.episode_id == target.unwrap_or(""))
+                    .map(|h| h.position_ms.max(0) as u64)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            Ok((s.settings()?, position))
+        })?;
+        let queue = episodes
+            .iter()
+            .map(|ep| QueueEpisode {
+                item: QueueItem {
+                    episode_id: ep.id.clone(),
+                    season: ep.season,
+                    number: ep.number,
+                    title: ep.title.clone(),
+                },
+                url: String::new(),
+            })
+            .collect();
+        self.ensure_surface_and_engine(app)?;
+        let (snap, show) = self.commit_online_start(
+            state,
+            request,
+            generation,
+            StartSessionRequest {
+                provider_id: scope,
+                profile_id: profile,
+                media: crate::online::details_item(&details),
+                episode_id: target.map(String::from),
+                episode_title: episode
+                    .map(|ep| format!("S{} E{} · {}", ep.season, ep.number, ep.title)),
+                url: resolved.url,
+                start_ms,
+                queue,
+                autoplay_next: settings.autoplay_next,
+                preferred_audio: settings.preferred_audio,
+                subtitles_default: settings.subtitles_default,
+            },
+            resolved.referer.as_deref(),
+        )?;
+        self.sync_surface_visibility(app, show);
+        self.ensure_poller(app);
+        let _ = app.emit(
+            "player-state",
+            PlayerStateEvent {
+                session_id: snap.session_id.clone(),
+                snapshot: snap.clone(),
+            },
+        );
+        Ok(snap)
+    }
+
+    // Keep this final validation under the controller lock: Stop/profile changes
+    // invalidate the request before they acquire that same lock.
+    fn commit_online_start(
+        &self,
+        state: &AppState,
+        request: u64,
+        generation: u64,
+        playback: StartSessionRequest,
+        referer: Option<&str>,
+    ) -> Result<(PlayerSnapshot, bool), AppError> {
+        let mut ctrl = self
+            .controller
+            .lock()
+            .map_err(|_| AppError::player("Player state unavailable."))?;
+        let snap = state.with_store(|store| {
+            if self.start_generation.load(Ordering::SeqCst) != request
+                || !state.online.is_current(&playback.provider_id, generation)
+                || store.active_profile()?.as_deref() != Some(playback.profile_id.as_str())
+            {
+                return Err(AppError::unauthenticated(
+                    "Account, profile, or playback request changed. Please retry.",
+                ));
+            }
+            ctrl.set_referer(referer)?;
+            ctrl.start(playback, store, now_ms())
+        })?;
+        Ok((snap, ctrl.should_show_surface()))
+    }
+
     pub fn control(
         &self,
         app: &AppHandle,
         state: &AppState,
         command: PlayerControlCommand,
     ) -> Result<PlayerSnapshot, AppError> {
+        if matches!(command, PlayerControlCommand::Stop) {
+            self.start_generation.fetch_add(1, Ordering::SeqCst);
+        }
         let (snap, show_surface) = {
             let mut ctrl = self
                 .controller
@@ -320,6 +538,7 @@ impl PlayerService {
     }
 
     pub fn stop_and_save(&self, app: &AppHandle, state: &AppState) {
+        self.start_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut ctrl) = self.controller.lock() {
             let _ = state.with_store(|store| {
                 ctrl.stop_and_save(store, now_ms());
@@ -330,6 +549,7 @@ impl PlayerService {
     }
 
     pub fn shutdown(&self, state: &AppState) {
+        self.start_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut ctrl) = self.controller.lock() {
             let _ = state.with_store(|store| {
                 ctrl.shutdown(store);
@@ -340,5 +560,90 @@ impl PlayerService {
         if handle != 0 {
             surface::destroy(handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        credentials::{CredentialError, CredentialStore},
+        online::{OnlineService, ResolverSession},
+        provider::Credentials,
+    };
+    struct SessionSecrets;
+    impl CredentialStore for SessionSecrets {
+        fn load(&self) -> Result<Option<Credentials>, CredentialError> {
+            Ok(None)
+        }
+        fn save(&self, _: &Credentials) -> Result<(), CredentialError> {
+            Err(CredentialError)
+        }
+        fn delete(&self) -> Result<(), CredentialError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn online_start_commit_rejects_stop_and_profile_changes_before_touching_engine() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0; 8192];
+            let _ = stream.read(&mut buffer).unwrap();
+            let body = r#"{"status":"ok","service":"marquee-resolver"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let path =
+            std::env::temp_dir().join(format!("marquee-commit-{}.sqlite", uuid::Uuid::new_v4()));
+        let mut state = AppState::new(path.clone(), Box::new(SessionSecrets));
+        state.online = OnlineService::with_secrets(Box::new(SessionSecrets));
+        tauri::async_runtime::block_on(state.connect_online(&base, "id", "secret", false)).unwrap();
+        let session = ResolverSession::new(&base, "id", "secret").unwrap();
+        let details = session
+            .map_details(
+                &serde_json::json!({"id":"/m12345","kind":"movie","name":"Movie","seasons":[]}),
+            )
+            .unwrap();
+        let profile = state.profiles_list().unwrap()[0].id.clone();
+        let (_, generation) = state.online.session().unwrap();
+        let request = || StartSessionRequest {
+            provider_id: session.scope(),
+            profile_id: profile.clone(),
+            media: crate::online::details_item(&details),
+            episode_id: None,
+            episode_title: None,
+            url: "https://cdn.test/video.mp4".into(),
+            start_ms: 0,
+            queue: vec![],
+            autoplay_next: false,
+            preferred_audio: "English".into(),
+            subtitles_default: false,
+        };
+        let player = PlayerService::default();
+        let first = player.start_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        player.shutdown(&state);
+        let error = player
+            .commit_online_start(&state, first, generation, request(), None)
+            .unwrap_err();
+        assert_eq!(error.code, "unauthenticated");
+        let next = player.start_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let other = state.profile_create("Other", "blue").unwrap();
+        state.profile_activate(&other.id).unwrap();
+        let error = player
+            .commit_online_start(&state, next, generation, request(), None)
+            .unwrap_err();
+        assert_eq!(error.code, "unauthenticated");
+        assert_eq!(player.snapshot().unwrap().status, "stopped");
+        drop(state);
+        std::fs::remove_file(path).unwrap();
+        server.join().unwrap();
     }
 }

@@ -14,18 +14,28 @@ web instead of from somebody else's server.
 GET /health
 GET /search?q=apartment%2023
 GET /show?id=/tYOM5N
-GET /resolve?id=/tYOM5N&season=2&episode=3      -> { url, container, host, ... }
+GET /resolve?id=/tYOM5N&season=2&episode=3      -> { url, container, streamUrl, ... }
+GET /stream?t=<signed>                          -> relays the video bytes
 ```
 
 `/resolve` returns a **direct, signed video URL** — usually an MP4 on a CDN, which
 ExoPlayer plays and seeks natively. Nothing is transcoded, nothing is stored.
 
-> **Read this before you deploy.** The links this service mints are bound to the IP
-> that minted them. A URL resolved on one network plays only from that network —
-> verified both directions (`206` from the minting IP, `403` from any other). So the
-> resolver must run **somewhere behind the same public IP as the TV**. Run it at
-> home. Do not put it on a VPS "for convenience": it will mint links your TV cannot
-> play. See [Where to run it](#where-to-run-it).
+It also returns **`streamUrl`**, a same-origin `/stream` link that relays the video
+through this resolver. Minted CDN links only answer the IP that minted them (see
+below), so a viewer on a different network should play `streamUrl` instead of `url`.
+The token is an HMAC over the upstream URL, so `/stream` is not an open proxy: it can
+only relay links this resolver itself resolved. Set `RESOLVER_STREAM_SECRET` to keep
+tokens valid across restarts (it defaults to `RESOLVER_TOKEN`, else a random secret).
+
+> **The links this service mints are bound to the IP that minted them.** A URL
+> resolved on one network plays only from that network — verified both directions
+> (`206` from the minting IP, `403` from any other). This is why `/resolve` also
+> returns `streamUrl`: playing that relays the bytes from the resolver (the minting
+> IP) so a viewer on a different network still gets video. If you want the raw `url`
+> to play directly, the resolver must run **behind the same public IP as the
+> viewer**; otherwise use `streamUrl` (which costs upstream bandwidth on this box).
+> See [Where to run it](#where-to-run-it).
 
 ## What it is not
 
@@ -94,16 +104,17 @@ it if your browser path differs.
 
 ## Where to run it
 
-| Placement | Works? | Why |
-|---|---|---|
-| A machine at home (Pi, mini PC, NAS, always-on PC) | ✅ | mints from the same public IP the TV watches from |
-| The same LAN, another room | ✅ | as above |
-| A VPS anywhere else | ❌ | links it mints return `403` to your TV |
-| Behind a VPN/proxy that changes your egress IP | ❌ | same reason |
+| Placement | Raw `url` plays? | `streamUrl` plays? | Why |
+|---|---|---|---|
+| A machine at home (Pi, mini PC, NAS) | ✅ | ✅ | mints from the same public IP the TV watches from |
+| The same LAN, another room | ✅ | ✅ | as above |
+| A viewer on a different network (remote desktop, another ISP) | ❌ | ✅ | raw links 403 off the minting IP; `streamUrl` relays the bytes |
+| A VPS anywhere else | ❌ | ✅ | same; relaying also means the VPS's egress carries the video |
 
-If the box is on your home network, the TV can reach it over the LAN. If you want it
-to work away from home too, see [A stable URL from outside](#a-stable-url-from-outside)
-— the tunnel keeps the minting IP unchanged, which is the whole point.
+If the box is on your home network, the TV can reach it over the LAN. To watch from
+another network, either play `streamUrl` (works anywhere, uses this box's bandwidth)
+or reach the resolver itself over a tunnel/VPN so it shares the viewer's IP — the
+tunnel keeps the minting IP unchanged, which is the whole point of the next section.
 
 ## Pointing Marquee at it
 
@@ -138,6 +149,7 @@ it, because it just forwards the path.
 | `RESOLVER_PORT` | `8099` | listen port |
 | `RESOLVER_HOST` | `0.0.0.0` | listen address (`127.0.0.1` behind a proxy) |
 | `RESOLVER_TOKEN` | unset | require `Authorization: Bearer …`, `?token=…`, or `/t/<token>/…` |
+| `RESOLVER_STREAM_SECRET` | `RESOLVER_TOKEN`, else random | HMAC key for `/stream` tokens; set it to keep links valid across restarts |
 | `RESOLVER_RATE_MAX` | `60` | requests per IP per window |
 | `RESOLVER_RATE_WINDOW_MS` | `600000` | window length (10 min) |
 | `RESOLVER_CACHE_MS` | `1200000` | reuse a resolved URL this long (20 min) |

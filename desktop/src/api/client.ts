@@ -15,6 +15,7 @@ import type {
   MediaItem,
   MediaKind,
   MediaRef,
+  OnlineStatus,
   Page,
   PlayerControlAction,
   PlayerSnapshot,
@@ -26,6 +27,11 @@ import type {
 export const isNative = () => isTauri();
 
 export const nativeApi: DesktopApi = {
+  onlineConnect: (args) => invoke<Bootstrap>('online_connect', { args }),
+  onlineDisconnect: () => invoke<void>('online_disconnect'),
+  onlineCheck: () => invoke<OnlineStatus>('online_check'),
+  onlineImportDevelopment: (args) => invoke<Bootstrap>('online_import_development', { args }),
+  onlineSearch: (args) => invoke<MediaItem[]>('online_search', { args }),
   bootstrap: () => invoke<Bootstrap>('app_bootstrap'),
   providerConnect: (args: ConnectArgs) => invoke<Bootstrap>('provider_connect', { args }),
   providerDisconnect: () => invoke<void>('provider_disconnect'),

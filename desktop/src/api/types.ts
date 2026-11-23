@@ -62,7 +62,23 @@ export interface CacheStatus {
 
 export type CredentialStatus = 'remembered' | 'session' | 'none';
 
+export interface OnlineStatus {
+  connected: boolean;
+  baseUrl?: string | null;
+  credentialStatus: CredentialStatus;
+  warning?: string | null;
+  developmentImport: boolean;
+}
+
+export interface OnlineConnectArgs {
+  baseUrl: string;
+  clientId: string;
+  clientSecret: string;
+  remember: boolean;
+}
+
 export interface Bootstrap {
+  online?: OnlineStatus;
   activeProviderId?: string | null;
   providerUrl?: string | null;
   credentialWarning?: string | null;
@@ -188,6 +204,7 @@ export interface QueueItem {
 }
 
 export type PlayerStatus =
+  | 'resolving'
   | 'loading'
   | 'playing'
   | 'paused'
@@ -260,6 +277,11 @@ export interface SettingsUpdateArgs {
 }
 
 export interface DesktopApi {
+  onlineConnect?(args: OnlineConnectArgs): Promise<Bootstrap>;
+  onlineDisconnect?(): Promise<void>;
+  onlineCheck?(): Promise<OnlineStatus>;
+  onlineImportDevelopment?(args: { baseUrl: string; remember: boolean }): Promise<Bootstrap>;
+  onlineSearch?(args: { query: string }): Promise<MediaItem[]>;
   bootstrap(): Promise<Bootstrap>;
   providerConnect?(args: ConnectArgs): Promise<Bootstrap>;
   providerDisconnect?(): Promise<void>;

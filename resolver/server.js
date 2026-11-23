@@ -2,6 +2,8 @@
 
 const http = require('node:http');
 const { URL } = require('node:url');
+const { Readable } = require('node:stream');
+const crypto = require('node:crypto');
 const goojara = require('./resolvers/goojara');
 const { shutdown } = require('./lib/browser');
 const { join } = require('node:path');
@@ -112,6 +114,99 @@ function json(res, status, payload) {
   res.end(body);
 }
 
+/**
+ * The signed URLs these hosts mint only answer to the IP that minted them, so a
+ * TV on another network (or a desktop on a different ISP) gets 403 even though the
+ * resolve itself succeeded. `/stream` fetches the file from this box - the minting
+ * IP - and pipes the bytes back, which removes the IP binding for the viewer.
+ *
+ * The token is an HMAC over the upstream URL, so this is never an open proxy: only
+ * URLs this resolver itself resolved can be streamed, and the secret dies with the
+ * process unless RESOLVER_STREAM_SECRET is set.
+ */
+const STREAM_SECRET =
+  process.env.RESOLVER_STREAM_SECRET || TOKEN || crypto.randomBytes(32).toString('hex');
+const STREAM_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+  'Chrome/124.0.0.0 Safari/537.36';
+
+function streamToken(url, referer) {
+  const body = Buffer.from(JSON.stringify({ u: url, r: referer || '' }), 'utf8').toString('base64url');
+  const mac = crypto.createHmac('sha256', STREAM_SECRET).update(body).digest('base64url');
+  return `${body}.${mac}`;
+}
+
+function readStreamToken(token) {
+  const dot = String(token || '').lastIndexOf('.');
+  if (dot <= 0) return null;
+  const body = token.slice(0, dot);
+  const given = Buffer.from(token.slice(dot + 1), 'utf8');
+  const mac = Buffer.from(
+    crypto.createHmac('sha256', STREAM_SECRET).update(body).digest('base64url'),
+    'utf8'
+  );
+  if (given.length !== mac.length || !crypto.timingSafeEqual(given, mac)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+    const parsed = new URL(payload.u);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return { url: parsed.toString(), referer: typeof payload.r === 'string' ? payload.r : '' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The URL a client used to reach us, so `/stream` links work over the LAN, a
+ * Cloudflare tunnel or Tailscale without configuration. Forwarded headers win
+ * because a tunnel terminates TLS in front of us.
+ */
+function publicBase(req) {
+  const proto = (req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim();
+  const host = (req.headers['x-forwarded-host'] || req.headers.host || 'localhost')
+    .split(',')[0]
+    .trim();
+  return `${proto}://${host}`;
+}
+
+/**
+ * Streams an upstream file back to the caller with Range passthrough, so seeking
+ * works and memory stays flat. The upstream sees this box's IP - the minting IP -
+ * which is the whole point.
+ */
+async function streamUpstream(req, res, target) {
+  const headers = { 'User-Agent': STREAM_UA, Referer: target.referer || 'https://web.wootly.ch/' };
+  if (req.headers.range) headers.Range = req.headers.range;
+  let upstream;
+  try {
+    upstream = await fetch(target.url, {
+      headers,
+      redirect: 'follow',
+      signal: AbortSignal.timeout(30_000)
+    });
+  } catch (error) {
+    return json(res, 502, { error: 'upstream unavailable' });
+  }
+  if (!upstream.ok || !upstream.body) {
+    // 403 here means the CDN no longer accepts this box's IP for that link; that is
+    // a resolver-side problem the viewer cannot fix, so report it honestly.
+    return json(res, 502, { error: `upstream returned ${upstream.status}` });
+  }
+  const passthrough = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag'];
+  const out = {
+    'Access-Control-Allow-Origin': '*',
+    'Cache-Control': 'no-store'
+  };
+  for (const name of passthrough) {
+    const value = upstream.headers.get(name);
+    if (value) out[name] = value;
+  }
+  res.writeHead(upstream.status === 206 ? 206 : 200, out);
+  Readable.fromWeb(upstream.body)
+    .on('error', () => res.destroy())
+    .pipe(res);
+}
+
 const recommendationStore = new Store(join(process.env.MARQUEE_DATA_DIR || join(__dirname, 'data'), 'marquee.sqlite'));
 const recommendationService = new RecommendationService(recommendationStore, new Metadata(recommendationStore), query =>
   withDeadline(goojara.search(query), DEADLINE_MS, 'availability search'));
@@ -171,6 +266,14 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    // /stream is authenticated by its own HMAC token and a video request makes many
+    // Range fetches, so it bypasses the bearer token and the coarse rate limiter.
+    if (path === '/stream') {
+      const target = readStreamToken(url.searchParams.get('t'));
+      if (!target) return json(res, 400, { error: "missing or invalid 't'" });
+      return streamUpstream(req, res, target);
+    }
+
     if (!authorised(req, url, split.token)) return json(res, 401, { error: 'unauthorised' });
 
     const quota = allow(clientIp(req));
@@ -224,17 +327,25 @@ const server = http.createServer(async (req, res) => {
 
       const key = `resolve:${episodeId}:${host || 'auto'}`;
       const cached = cacheGet(key);
-      if (cached) return json(res, 200, { ...cached, cached: true });
-
-      const playback = await once(key, () =>
-        withDeadline(goojara.resolve(episodeId, { preferred: host }), DEADLINE_MS, 'resolve')
-      );
-      const payload = { id: episodeId, label, ...playback };
-      cachePut(key, payload);
+      const playback = cached
+        ? cached
+        : await once(key, () =>
+            withDeadline(goojara.resolve(episodeId, { preferred: host }), DEADLINE_MS, 'resolve')
+          );
+      if (!cached) cachePut(key, playback);
+      const payload = {
+        id: episodeId,
+        label,
+        ...playback,
+        // Absolute, served from the same base the client used. Prefer `streamUrl`
+        // when the viewer is not on the resolver's own network.
+        streamUrl: publicBase(req) + '/stream?t=' + streamToken(playback.url, playback.referer)
+      };
+      if (cached) payload.cached = true;
       return json(res, 200, payload);
     }
 
-    return json(res, 404, { error: 'not found', paths: ['/health', '/search', '/show', '/resolve'] });
+    return json(res, 404, { error: 'not found', paths: ['/health', '/search', '/show', '/resolve', '/stream'] });
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
     return json(res, 502, { error: message });

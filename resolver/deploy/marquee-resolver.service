@@ -1,0 +1,37 @@
+[Unit]
+Description=Marquee resolver (stream resolution API)
+Documentation=file://%h/services/marquee-resolver/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/services/marquee-resolver
+ExecStart=/usr/bin/node server.js
+Environment=NODE_ENV=production
+# System Chromium: no 150 MB browser download, and it gets distro updates.
+Environment=MARQUEE_CHROME=/usr/bin/chromium
+Environment=RESOLVER_PORT=8099
+Environment=RESOLVER_HOST=0.0.0.0
+Environment=MARQUEE_DATA_DIR=%h/.local/share/marquee
+EnvironmentFile=-%h/.config/marquee/resolver.env
+Restart=always
+RestartSec=4
+
+# A resolve is a browser session, so cap what one can take out of the machine.
+# Three of these four numbers are the difference between "someone found my URL" and
+# "my desktop froze". They are ceilings, not reservations: idle use is ~70 MB.
+MemoryMax=1500M
+CPUQuota=200%
+TasksMax=256
+
+# The service never needs to change the system, so take those powers away.
+NoNewPrivileges=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+
+[Install]
+WantedBy=default.target

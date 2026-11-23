@@ -7,6 +7,8 @@ Thanks for wanting to help. Marquee is a personal project, but issues and pull r
 - Be respectful and constructive.
 - **Never post provider credentials, URLs, or personal stream links** in issues or pull requests.
 - Marquee is a client only. Do not use issues or PRs to share or request copyrighted streams.
+- **Self-hosting questions belong in [`resolver/README.md`](resolver/README.md).** Do not post
+  your own resolver address, token, or server logs in an issue.
 - Keep discussion on topic: the app, the UI, and the code.
 
 ## Reporting bugs

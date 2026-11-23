@@ -17,7 +17,95 @@ import androidx.core.content.ContextCompat
 class ProfilesActivity : AppCompatActivity() {
 
     private lateinit var row: LinearLayout
+    private lateinit var onlineButton: TextView
+    private lateinit var serverButton: TextView
+    private lateinit var hintView: TextView
     private lateinit var activeId: String
+
+    /**
+     * Says plainly which of the two online modes is in force, so nobody has to guess
+     * why results appear for one title and not another.
+     */
+    private fun hintText(): String = when {
+        !Prefs.onlineEnabled(this) ->
+            "Online sources are off. Search covers your library only."
+        Prefs.resolverBase(this).isBlank() ->
+            "No stream server set. Online results use the built-in public fallback; add a resolver for a private, reliable one."
+        else ->
+            "Online sources fill in titles your library does not carry."
+    }
+
+    private fun onlineLabel(): String =
+        if (Prefs.onlineEnabled(this)) "Online sources: On" else "Online sources: Off"
+
+    private fun serverLabel(): String {
+        val base = Prefs.resolverBase(this)
+        if (base.isBlank()) return "Server: not set"
+        val host = base.removePrefix("http://").removePrefix("https://")
+        return if (Prefs.resolverKey(this).isNotBlank()) "Server: $host · key" else "Server: $host"
+    }
+
+    private fun editServer() {
+        fun field(hint: String, value: String, uri: Boolean): EditText =
+            EditText(this).apply {
+                this.hint = hint
+                inputType = if (uri) {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                } else {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                }
+                setSingleLine(true)
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+                background = ContextCompat.getDrawable(this@ProfilesActivity, R.drawable.input_bg)
+                setTextColor(MarqueeUi.INK)
+                setHintTextColor(MarqueeUi.DUST)
+                textSize = 18f
+                setText(value)
+                setSelection(text.length)
+            }
+
+        val serverField = field("192.168.1.50:8099", Prefs.resolverBase(this), uri = true)
+        val keyField = field("Access key (optional)", Prefs.resolverKey(this), uri = false)
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), dp(4))
+            addView(serverField, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+            addView(keyField, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) })
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Stream server")
+            .setMessage(
+                "Where the resolver runs. Leave the address blank to use only the " +
+                    "public fallback. Key: a Cloudflare Access service token as " +
+                    "clientId:clientSecret, or a bearer token. Only needed when the " +
+                    "host is not open on your LAN."
+            )
+            .setView(column)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save") { _, _ ->
+                var value = serverField.text.toString().trim().trimEnd('/')
+                if (value.isNotEmpty() && !value.startsWith("http")) value = "http://" + value
+                Prefs.setResolverBase(this, value)
+                Prefs.setResolverKey(this, keyField.text.toString())
+                serverButton.text = serverLabel()
+                hintView.text = hintText()
+            }
+            .create()
+        dialog.setOnShowListener {
+            serverField.requestFocus()
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+            imm.showSoftInput(serverField, InputMethodManager.SHOW_IMPLICIT)
+        }
+        dialog.show()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -63,11 +151,64 @@ class ProfilesActivity : AppCompatActivity() {
         val add = MarqueeUi.button(this, "+  Add profile").apply {
             setOnClickListener { addProfile() }
         }
-        root.addView(add, FrameLayout.LayoutParams(
+
+        // The online fallback is the one global switch in the app; it lives here
+        // because this screen is what the profile chip in the top bar opens.
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        onlineButton = MarqueeUi.button(this, onlineLabel()).apply {
+            setOnClickListener {
+                val enabled = !Prefs.onlineEnabled(this@ProfilesActivity)
+                Prefs.setOnlineEnabled(this@ProfilesActivity, enabled)
+                text = onlineLabel()
+                hintView.text = hintText()
+            }
+        }
+        footer.addView(onlineButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            dp(44)
+        ).apply { marginEnd = dp(12) })
+
+        // The resolver's address is the one thing that cannot be discovered at
+        // runtime: it is wherever the viewer runs /resolver.
+        serverButton = MarqueeUi.button(this, serverLabel()).apply {
+            setOnClickListener { editServer() }
+        }
+        footer.addView(serverButton, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            dp(44)
+        ).apply { marginEnd = dp(12) })
+        footer.addView(add, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            dp(44)
+        ))
+
+        val footerColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(footer, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+            hintView = MarqueeUi.text(
+                this@ProfilesActivity,
+                hintText(),
+                14f,
+                MarqueeUi.DUST,
+                MarqueeUi.body()
+            ).apply { gravity = Gravity.CENTER }
+            addView(hintView, LinearLayout.LayoutParams(
+                dp(620),
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) })
+        }
+        root.addView(footerColumn, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.WRAP_CONTENT,
-            dp(44),
+            FrameLayout.LayoutParams.WRAP_CONTENT,
             Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-        ).apply { bottomMargin = dp(64) })
+        ).apply { bottomMargin = dp(56) })
 
         setContentView(root)
         render()

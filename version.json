@@ -1,7 +1,7 @@
 {
-  "versionCode": 10,
-  "versionName": "1.8",
-  "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/latest/download/Marquee.apk",
-  "sha256": "f0b573583419b3851c3a05e8535dbd931966cb5efc7eba2507d6ffad444a1393",
-  "notes": "Marquee 1.8: Search answers as you type instead of freezing, and the library refresh no longer strains memory."
+  "versionCode": 17,
+  "versionName": "1.15",
+  "apkUrl": "https://github.com/TheophilusChinomona/marquee/releases/download/v1.15/Marquee.apk",
+  "sha256": "2294cd40dea3c978ab856ac504cbcab641be859c07c45398dbc2779c3dd33da9",
+  "notes": "Marquee 1.15: updates from the default branch. Native TV verification is separate from CI builds."
 }

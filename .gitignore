@@ -23,3 +23,7 @@ screenshots/icon-512.png
 
 .superpowers/
 desktop/src-tauri/resources/mpv/
+# Resolver: dependencies and local state
+resolver/node_modules/
+resolver/*.log
+resolver/data/

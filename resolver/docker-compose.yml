@@ -1,0 +1,35 @@
+services:
+  resolver:
+    build:
+      context: .
+    # Once an image is published, this is enough on its own:
+    # image: ghcr.io/theophiluschinomona/marquee-resolver:latest
+    container_name: marquee-resolver
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    environment:
+      # Open on the LAN by default. Set a token if this host is reachable from the
+      # internet, and give the app the same token (Profiles -> Server).
+      RESOLVER_TOKEN: ${RESOLVER_TOKEN:-}
+      RESOLVER_CACHE_MS: "1200000"
+      RESOLVER_RATE_MAX: "60"
+      TMDB_READ_TOKEN: ${TMDB_READ_TOKEN:-}
+      MARQUEE_DATA_DIR: /data
+    volumes:
+      - marquee-data:/data
+    # Chromium wants more shared memory than Docker's 64 MB default.
+    shm_size: "512mb"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8099/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  marquee-data:

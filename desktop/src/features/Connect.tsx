@@ -2,10 +2,14 @@ import { useState } from 'react';
 import { ArrowLeft, ArrowRight, Globe, Layers, ShieldCheck } from 'lucide-react';
 import { extractAppError, type Bootstrap, type DesktopApi } from '../api/types';
 import { ErrorBanner } from '../components/StatusView';
+import OnlineConnect from './OnlineConnect';
 
 interface ConnectProps {
   api: DesktopApi;
   initialUrl?: string | null;
+  onlineUrl?: string | null;
+  developmentImport?: boolean;
+  initialMode?: 'iptv' | 'online';
   canGoBack: boolean;
   onBack?: () => void;
   onConnected: (bootstrap: Bootstrap) => void;
@@ -14,10 +18,14 @@ interface ConnectProps {
 export default function Connect({
   api,
   initialUrl,
+  onlineUrl,
+  developmentImport,
+  initialMode = 'iptv',
   canGoBack,
   onBack,
   onConnected,
 }: ConnectProps) {
+  const [mode, setMode] = useState(initialMode);
   const [baseUrl, setBaseUrl] = useState(initialUrl ?? '');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -55,6 +63,11 @@ export default function Connect({
           <ArrowLeft size={16} /> Back
         </button>
       )}
+      <div className="chips" role="group" aria-label="Connection type">
+        <button type="button" className={mode === 'iptv' ? 'chip selected' : 'chip'} disabled={submitting} onClick={() => setMode('iptv')}>IPTV provider</button>
+        <button type="button" className={mode === 'online' ? 'chip selected' : 'chip'} disabled={submitting} onClick={() => setMode('online')}>Online Library</button>
+      </div>
+      {mode === 'online' ? <OnlineConnect api={api} initialUrl={onlineUrl} developmentImport={developmentImport} onConnected={onConnected} /> : (
       <form className="connect-card" onSubmit={handleSubmit}>
         <span className="connect-icon">
           <Layers size={28} />
@@ -130,6 +143,7 @@ export default function Connect({
           <ShieldCheck size={13} /> Credentials stay on your device and are never saved in plain text.
         </p>
       </form>
+      )}
     </div>
   );
 }

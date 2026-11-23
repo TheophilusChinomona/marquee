@@ -2,6 +2,8 @@ mod catalog;
 mod commands;
 mod credentials;
 mod models;
+mod online;
+mod online_store;
 mod player;
 mod provider;
 mod recommendations;
@@ -101,6 +103,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::online_connect,
+            commands::online_disconnect,
+            commands::online_check,
+            commands::online_import_development,
+            commands::online_search,
             commands::app_bootstrap,
             commands::provider_connect,
             commands::provider_disconnect,

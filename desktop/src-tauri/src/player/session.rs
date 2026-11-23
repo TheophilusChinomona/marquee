@@ -8,6 +8,9 @@ use serde_json::Value;
 use std::fmt;
 
 pub const PROGRESS_SAVE_INTERVAL_MS: i64 = 10_000;
+/// How long a newly requested file may stay unloaded before surfacing a failure.
+/// Without this, a dead/slow stream spins "Starting stream…" forever.
+pub const LOAD_TIMEOUT_MS: i64 = 45_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndReason {
@@ -176,6 +179,9 @@ impl Default for EnginePoll {
 }
 
 pub trait MediaEngine: Send {
+    fn set_referer(&mut self, _referer: Option<&str>) -> Result<(), AppError> {
+        Ok(())
+    }
     fn load(&mut self, url: &str, start_ms: u64) -> Result<(), AppError>;
     fn set_pause(&mut self, paused: bool) -> Result<(), AppError>;
     fn seek_absolute_ms(&mut self, ms: u64) -> Result<(), AppError>;
@@ -244,6 +250,9 @@ fn parse_track_list(raw: &str) -> (Vec<TrackInfo>, Option<i64>, Option<i64>) {
 }
 
 impl MediaEngine for NativePlayer {
+    fn set_referer(&mut self, referer: Option<&str>) -> Result<(), AppError> {
+        self.command(&["set", "referrer", referer.unwrap_or("")])
+    }
     fn load(&mut self, url: &str, start_ms: u64) -> Result<(), AppError> {
         NativePlayer::load(self, url, start_ms)
     }
@@ -375,6 +384,8 @@ struct ActivePlayback {
     suppress_next_end: bool,
     overlay_open: bool,
     last_saved_at_ms: i64,
+    /// When the current file began loading, used to fail fast on dead streams.
+    load_started_at_ms: i64,
 }
 
 impl ActivePlayback {
@@ -409,8 +420,20 @@ impl ActivePlayback {
 
 #[derive(Default)]
 pub struct SessionController {
+    pending_episode: Option<PendingEpisode>,
+    transition_id: Option<String>,
     engine: Option<Box<dyn MediaEngine>>,
     active: Option<ActivePlayback>,
+}
+
+#[derive(Clone)]
+pub struct PendingEpisode {
+    pub session_id: String,
+    pub request_id: String,
+    pub episode_id: String,
+    pub media_ref: crate::models::MediaRef,
+    pub provider_id: String,
+    pub profile_id: String,
 }
 
 impl SessionController {
@@ -419,7 +442,125 @@ impl SessionController {
         Self {
             engine: Some(engine),
             active: None,
+            ..Self::default()
         }
+    }
+
+    pub fn set_referer(&mut self, referer: Option<&str>) -> Result<(), AppError> {
+        self.engine
+            .as_mut()
+            .ok_or_else(|| AppError::player("Player runtime unavailable."))?
+            .set_referer(referer)
+    }
+
+    fn defer_episode(&mut self, episode_id: &str) -> Result<(), AppError> {
+        let active = self
+            .active
+            .as_mut()
+            .ok_or_else(|| AppError::player("No active playback session."))?;
+        self.engine
+            .as_mut()
+            .ok_or_else(|| AppError::player("Player runtime unavailable."))?
+            .stop()?;
+        let request_id = uuid::Uuid::new_v4().to_string();
+        self.pending_episode = Some(PendingEpisode {
+            session_id: active.session_id.clone(),
+            request_id: request_id.clone(),
+            episode_id: episode_id.into(),
+            media_ref: active.media.media_ref.clone(),
+            provider_id: active.provider_id.clone(),
+            profile_id: active.profile_id.clone(),
+        });
+        self.transition_id = Some(request_id);
+        active.status = "resolving".into();
+        // stop() queues an end-file event. Preserve resolution errors when it is
+        // drained after the asynchronous resolver request completes.
+        active.suppress_next_end = true;
+        let ep = active
+            .queue
+            .iter()
+            .find(|ep| ep.item.episode_id == episode_id)
+            .ok_or_else(|| AppError::validation("Selected episode was not found."))?;
+        active.episode_id = Some(episode_id.into());
+        active.episode_title = Some(format!(
+            "S{} E{} · {}",
+            ep.item.season, ep.item.number, ep.item.title
+        ));
+        active.position_ms = 0;
+        active.duration_ms = 0;
+        active.seekable = false;
+        active.error = None;
+        Ok(())
+    }
+
+    pub fn take_pending_episode(&mut self) -> Option<PendingEpisode> {
+        self.pending_episode.take()
+    }
+
+    pub fn pending_is_current(&self, pending: &PendingEpisode) -> bool {
+        self.transition_id.as_deref() == Some(pending.request_id.as_str())
+            && self
+                .active
+                .as_ref()
+                .is_some_and(|a| a.session_id == pending.session_id && a.status == "resolving")
+    }
+
+    pub fn fail_pending_episode(&mut self, pending: &PendingEpisode, error: AppError) {
+        if self.pending_is_current(pending) {
+            self.transition_id = None;
+            if let Some(active) = &mut self.active {
+                active.status = "error".into();
+                active.error = Some(error);
+            }
+        }
+    }
+
+    pub fn finish_pending_episode(
+        &mut self,
+        pending: &PendingEpisode,
+        url: &str,
+        referer: Option<&str>,
+        now: i64,
+    ) -> Result<bool, AppError> {
+        if !self.pending_is_current(pending) {
+            return Ok(false);
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| AppError::player("No active playback session."))?;
+        let ep = active
+            .queue
+            .iter()
+            .find(|ep| ep.item.episode_id == pending.episode_id)
+            .ok_or_else(|| AppError::validation("Episode no longer available."))?;
+        let title = format!(
+            "S{} E{} · {}",
+            ep.item.season, ep.item.number, ep.item.title
+        );
+        let engine = self
+            .engine
+            .as_mut()
+            .ok_or_else(|| AppError::player("Player runtime unavailable."))?;
+        engine.set_referer(referer)?;
+        engine.apply_preferences(&active.preferred_audio, active.subtitles_default);
+        engine.load(url, 0)?;
+        let _ = engine.set_pause(false);
+        if let Some(active) = &mut self.active {
+            active.episode_id = Some(pending.episode_id.clone());
+            active.episode_title = Some(title);
+            active.current_url = url.into();
+            active.status = "loading".into();
+            active.position_ms = 0;
+            active.duration_ms = 0;
+            active.error = None;
+            active.eof_handled = false;
+            active.suppress_next_end = true;
+            active.last_saved_at_ms = now;
+            active.load_started_at_ms = now;
+        }
+        self.transition_id = None;
+        Ok(true)
     }
 
     pub fn has_engine(&self) -> bool {
@@ -481,6 +622,8 @@ impl SessionController {
         store: &mut Store,
         now: i64,
     ) -> Result<PlayerSnapshot, AppError> {
+        self.pending_episode = None;
+        self.transition_id = None;
         if self.active.is_some() {
             self.persist_current(store, now, false);
         }
@@ -521,6 +664,7 @@ impl SessionController {
             suppress_next_end: replacing,
             overlay_open: false,
             last_saved_at_ms: now,
+            load_started_at_ms: now,
         };
         let snap = active.snapshot();
         self.active = Some(active);
@@ -548,6 +692,18 @@ impl SessionController {
         let Some(active) = self.active.as_ref() else {
             return Err(AppError::player("No active playback session."));
         };
+        if active.status == "resolving"
+            && !matches!(
+                command,
+                PlayerControlCommand::PreviousEpisode
+                    | PlayerControlCommand::NextEpisode
+                    | PlayerControlCommand::SelectEpisode(_)
+            )
+        {
+            return Err(AppError::player(
+                "Wait for the next stream to resolve, or stop playback.",
+            ));
+        }
         let is_live = active.media.media_ref.kind == MediaKind::Live;
         let seekable = active.seekable && !is_live;
         let current_pos = active.position_ms;
@@ -737,6 +893,9 @@ impl SessionController {
             )
         };
 
+        if url.is_empty() {
+            return self.defer_episode(episode_id);
+        }
         let engine = self
             .engine
             .as_mut()
@@ -763,6 +922,13 @@ impl SessionController {
     /// Polls native engine state, guards against stale pre-load position/EOF events,
     /// persists progress every 10s, and handles natural EOF episode auto-advance exactly once.
     pub fn tick(&mut self, store: &mut Store, now: i64) -> Option<PlayerSnapshot> {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.status == "resolving")
+        {
+            return Some(self.snapshot());
+        }
         if self.active.is_none() || self.engine.is_none() {
             return None;
         }
@@ -789,6 +955,16 @@ impl SessionController {
                             "Playback failed or stream connection was lost. Try again.",
                         ));
                     }
+                }
+                // A stream that never loads must not spin forever: fail with a retryable error.
+                if active.status == "loading"
+                    && now.saturating_sub(active.load_started_at_ms) >= LOAD_TIMEOUT_MS
+                {
+                    active.status = "error".into();
+                    active.error = Some(AppError::network(
+                        "This stream is taking too long to load. Check your connection and try again.",
+                        true,
+                    ));
                 }
                 return Some(active.snapshot());
             }
@@ -875,6 +1051,19 @@ impl SessionController {
         }
 
         if let Some(next_ep_id) = trigger_advance_id {
+            if self.active.as_ref().is_some_and(|a| {
+                a.queue
+                    .iter()
+                    .any(|ep| ep.item.episode_id == next_ep_id && ep.url.is_empty())
+            }) {
+                if let Err(error) = self.defer_episode(&next_ep_id)
+                    && let Some(active) = &mut self.active
+                {
+                    active.status = "error".into();
+                    active.error = Some(error);
+                }
+                return Some(self.snapshot());
+            }
             let next_info = self.active.as_ref().and_then(|a| {
                 a.queue
                     .iter()
@@ -917,6 +1106,8 @@ impl SessionController {
     }
 
     pub fn stop_and_save(&mut self, store: &mut Store, now: i64) {
+        self.pending_episode = None;
+        self.transition_id = None;
         if self.active.is_some() {
             self.persist_current(store, now, false);
         }
@@ -1070,6 +1261,151 @@ mod tests {
             preferred_audio: "English".into(),
             subtitles_default: false,
         }
+    }
+
+    #[test]
+    fn deferred_autoplay_saves_completion_and_every_episode_visit_needs_a_new_url() {
+        let mut db = Store::open_memory().unwrap();
+        let prov = db.connect_provider("acc", "http://a.test/").unwrap();
+        let prof = db.profiles().unwrap()[0].id.clone();
+        let mut request = series_request(&prov, &prof, true);
+        for ep in &mut request.queue {
+            ep.url.clear();
+        }
+        let mut engine = FakeEngine::default();
+        engine.push_poll(EnginePoll {
+            file_loaded: true,
+            position_ms: 500_000,
+            duration_ms: 1_000_000,
+            ..EnginePoll::default()
+        });
+        engine.push_poll(EnginePoll {
+            file_loaded: true,
+            position_ms: 1_000_000,
+            duration_ms: 1_000_000,
+            end_event: Some(EndReason::NaturalEof),
+            ..EnginePoll::default()
+        });
+        let mut ctrl = SessionController::with_engine(Box::new(engine));
+        ctrl.start(request, &mut db, 0).unwrap();
+        ctrl.tick(&mut db, 1);
+        ctrl.tick(&mut db, 2);
+        assert_eq!(ctrl.snapshot().status, "resolving");
+        assert!(
+            db.item_history_entries(&prov, &prof, MediaKind::Series, "series-1")
+                .unwrap()
+                .iter()
+                .any(|e| e.episode_id == "ep-101" && e.completed)
+        );
+        let pending = ctrl.take_pending_episode().unwrap();
+        assert_eq!(pending.episode_id, "ep-102");
+        assert!(
+            ctrl.finish_pending_episode(&pending, "https://cdn.test/fresh-102.mp4", None, 3)
+                .unwrap()
+        );
+        assert_eq!(ctrl.snapshot().status, "loading");
+        ctrl.control(PlayerControlCommand::PreviousEpisode, &mut db, 4)
+            .unwrap();
+        let previous = ctrl.take_pending_episode().unwrap();
+        assert_eq!(previous.episode_id, "ep-101");
+        ctrl.finish_pending_episode(&previous, "https://cdn.test/fresh-101.mp4", None, 5)
+            .unwrap();
+        ctrl.control(PlayerControlCommand::NextEpisode, &mut db, 6)
+            .unwrap();
+        assert_eq!(ctrl.snapshot().status, "resolving");
+        let again = ctrl.take_pending_episode().unwrap();
+        assert_eq!(again.episode_id, "ep-102");
+        assert_ne!(again.request_id, pending.request_id);
+        assert!(
+            !ctrl
+                .finish_pending_episode(&pending, "https://cdn.test/stale.mp4", None, 7)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn failed_episode_resolution_keeps_retry_error_after_expected_native_stop() {
+        let mut db = Store::open_memory().unwrap();
+        let prov = db.connect_provider("acc", "http://a.test/").unwrap();
+        let prof = db.profiles().unwrap()[0].id.clone();
+        let mut req = series_request(&prov, &prof, true);
+        for ep in &mut req.queue {
+            ep.url.clear();
+        }
+        let mut engine = FakeEngine::default();
+        engine.push_poll(EnginePoll {
+            end_event: Some(EndReason::Stop),
+            ..EnginePoll::default()
+        });
+        let mut ctrl = SessionController::with_engine(Box::new(engine));
+        ctrl.start(req, &mut db, 0).unwrap();
+        ctrl.control(PlayerControlCommand::NextEpisode, &mut db, 1)
+            .unwrap();
+        let pending = ctrl.take_pending_episode().unwrap();
+        ctrl.fail_pending_episode(&pending, AppError::network("Resolver unavailable", true));
+        ctrl.tick(&mut db, 2);
+        assert_eq!(ctrl.snapshot().status, "error");
+        assert_eq!(
+            ctrl.snapshot().error.unwrap().message,
+            "Resolver unavailable"
+        );
+    }
+
+    #[test]
+    fn deferred_episode_selection_waits_for_resolution_and_rejects_stale_results() {
+        let mut db = Store::open_memory().unwrap();
+        let prov = db.connect_provider("acc", "http://a.test/").unwrap();
+        let prof = db.profiles().unwrap()[0].id.clone();
+        let mut req = series_request(&prov, &prof, true);
+        for ep in &mut req.queue {
+            ep.url.clear();
+        }
+        let mut ctrl = SessionController::with_engine(Box::new(FakeEngine::default()));
+        ctrl.start(req, &mut db, 0).unwrap();
+        ctrl.control(PlayerControlCommand::NextEpisode, &mut db, 1)
+            .unwrap();
+        let pending = ctrl.take_pending_episode().unwrap();
+        assert_eq!(pending.episode_id, "ep-102");
+        assert_eq!(ctrl.snapshot().status, "resolving");
+        assert_eq!(ctrl.snapshot().episode_id.as_deref(), Some("ep-102"));
+        assert!(
+            ctrl.control(PlayerControlCommand::Pause, &mut db, 1)
+                .is_err()
+        );
+        assert_eq!(ctrl.snapshot().status, "resolving");
+        ctrl.stop_and_save(&mut db, 2);
+        assert!(
+            !ctrl
+                .finish_pending_episode(&pending, "https://cdn.test/new.mp4", None, 3)
+                .unwrap()
+        );
+        assert_eq!(ctrl.snapshot().status, "stopped");
+    }
+
+    #[test]
+    fn a_stream_that_never_loads_times_out_with_a_retryable_error() {
+        let mut db = Store::open_memory().unwrap();
+        let prov = db.connect_provider("acc", "http://a.test/").unwrap();
+        let prof = db.profiles().unwrap()[0].id.clone();
+        let mut engine = FakeEngine::default();
+        // Never loaded, never errors: without a timeout this would spin forever.
+        for _ in 0..5 {
+            engine.push_poll(EnginePoll {
+                file_loaded: false,
+                ..EnginePoll::default()
+            });
+        }
+        let mut ctrl = SessionController::with_engine(Box::new(engine));
+        ctrl.start(series_request(&prov, &prof, true), &mut db, 0)
+            .unwrap();
+        assert_eq!(ctrl.snapshot().status, "loading");
+        assert_eq!(
+            ctrl.tick(&mut db, LOAD_TIMEOUT_MS - 1).unwrap().status,
+            "loading"
+        );
+        let timed_out = ctrl.tick(&mut db, LOAD_TIMEOUT_MS).unwrap();
+        assert_eq!(timed_out.status, "error");
+        assert!(timed_out.error.as_ref().is_some_and(|e| e.retryable));
     }
 
     #[test]

@@ -2,7 +2,21 @@
 
 Windows and Linux desktop IPTV client built with **Tauri 2**, **React + TypeScript**, **Rust**, **SQLite**, and embedded **libmpv**.
 
+Marquee can also connect to a **Marquee Resolver** online library independently of any IPTV provider, so you can search movies and series and watch them through the same native player without an IPTV account.
+
 > No provider credentials, real stream URLs, or sample catalogues are bundled in native desktop builds.
+
+## Online Library
+
+Connecting to an online library requires a resolver URL and a Cloudflare Access service token (`CLIENT_ID` / `CLIENT_SECRET`). It is completely separate from IPTV setup:
+
+- Choose **Online Library** in setup (or **Settings → Online Library**) and enter the resolver URL, client ID, and client secret.
+- Credentials live only in Rust and the OS keyring; if the secret store is unavailable Marquee reports a session-only login instead of writing secrets to disk. Logout clears them.
+- Search is the entry point: type at least 3 characters to find movies and series online. Saved titles appear under My List, and progress/resume works per profile.
+- Every playback start and every episode change re-resolves a fresh stream URL; signed URLs are never persisted.
+- Development builds can import credentials from the main checkout's `.env` (located via `git rev-parse --git-common-dir`) through **Connect using local development credentials** instead of typing them.
+
+Online identity is namespaced by the normalized resolver address, so switching resolvers never exposes another server's saved titles.
 
 ## Prerequisites
 

@@ -29,6 +29,7 @@ interface SettingsProps {
   refreshProgress?: CatalogProgressEvent | null;
   onGoProfiles: () => void;
   onGoConnect: () => void;
+  onGoOnline?: () => void;
   onRefreshLibrary: () => void;
   onDisconnected: () => void;
   onSettingsChanged: (settings: AppSettings) => void;
@@ -42,6 +43,7 @@ export default function Settings({
   refreshProgress,
   onGoProfiles,
   onGoConnect,
+  onGoOnline,
   onRefreshLibrary,
   onDisconnected,
   onSettingsChanged,
@@ -50,6 +52,7 @@ export default function Settings({
   const [tab, setTab] = useState(initialTab);
   const [error, setError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [onlineBusy, setOnlineBusy] = useState(false);
 
   const activeProfile =
     bootstrap.profiles.find((p) => p.id === bootstrap.activeProfileId) ?? bootstrap.profiles[0];
@@ -57,6 +60,7 @@ export default function Settings({
   const tabs = [
     { name: 'General', icon: SettingsIcon },
     { name: 'Provider', icon: Globe },
+    { name: 'Online Library', icon: Globe },
     { name: 'Playback', icon: Play },
     { name: 'Appearance', icon: Moon },
     { name: 'About Marquee', icon: Info },
@@ -149,6 +153,24 @@ export default function Settings({
           </p>
 
           {error && <ErrorBanner message={error} />}
+
+          {tab === 'Online Library' && <>
+            <div className="provider-card"><Globe size={24} /><div><strong>{bootstrap.online?.baseUrl ?? 'No online library connected'}</strong><span>{bootstrap.online?.connected ? 'Search movies and series online' : 'Connect your resolver to search and watch'}</span></div><span className="status-tag">{bootstrap.online?.credentialStatus === 'remembered' ? 'REMEMBERED' : bootstrap.online?.connected ? 'SESSION ONLY' : 'DISCONNECTED'}</span></div>
+            {bootstrap.online?.warning && <ErrorBanner message={bootstrap.online.warning} />}
+            <SettingRow title="Online connection" description="Connect independently of your IPTV provider."><button className="button secondary compact" type="button" onClick={onGoOnline ?? onGoConnect}>{bootstrap.online?.connected ? 'Change online connection' : 'Connect online library'}</button></SettingRow>
+            {bootstrap.online?.connected && <SettingRow title="Check connection" description="Check authentication and resolver availability."><button className="button secondary compact" type="button" disabled={onlineBusy} onClick={async () => {
+              setOnlineBusy(true); setError(null);
+              try { await api.onlineCheck?.(); onNotify('Online library connection is healthy.'); }
+              catch (err) { setError(extractAppError(err, 'Unable to reach the online library.').message); }
+              finally { setOnlineBusy(false); }
+            }}>{onlineBusy ? 'Checking…' : 'Check connection'}</button></SettingRow>}
+            {bootstrap.online?.baseUrl && <SettingRow title="Disconnect online library" description="Clear saved credentials. Keep your saved titles and watch progress."><button className="button outline compact danger" type="button" disabled={onlineBusy} onClick={async () => {
+              setOnlineBusy(true); setError(null);
+              try { await api.onlineDisconnect?.(); onNotify('Disconnected from online library.'); }
+              catch (err) { setError(extractAppError(err, 'Unable to clear online credentials.').message); }
+              finally { onDisconnected(); setOnlineBusy(false); }
+            }}>Disconnect online library</button></SettingRow>}
+          </>}
 
           {tab === 'General' && (
             <>

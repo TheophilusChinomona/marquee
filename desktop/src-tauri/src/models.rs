@@ -176,6 +176,7 @@ pub struct CacheStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Bootstrap {
+    pub online: Option<crate::online::OnlineStatus>,
     pub active_provider_id: Option<String>,
     pub provider_url: Option<String>,
     pub credential_warning: Option<String>,
@@ -191,6 +192,7 @@ pub struct Bootstrap {
 impl Bootstrap {
     pub fn disconnected() -> Self {
         Self {
+            online: None,
             active_provider_id: None,
             provider_url: None,
             credential_warning: None,

@@ -21,6 +21,7 @@ struct ConnectionState {
 }
 
 pub struct AppState {
+    pub online: crate::online::OnlineService,
     path: PathBuf,
     store: Mutex<Option<Store>>,
     connection: Mutex<ConnectionState>,
@@ -36,6 +37,7 @@ fn unavailable() -> AppError {
 impl AppState {
     pub fn new(path: PathBuf, secrets: Box<dyn CredentialStore>) -> Self {
         Self {
+            online: crate::online::OnlineService::default(),
             path,
             store: Mutex::new(None),
             connection: Mutex::new(ConnectionState {
@@ -102,6 +104,7 @@ impl AppState {
     }
 
     pub fn bootstrap(&self) -> Result<Bootstrap, AppError> {
+        let online = self.online_status()?;
         self.with_store(|store| {
             let mut connection = self.connection.lock().map_err(|_| unavailable())?;
             if !connection.restored {
@@ -132,6 +135,7 @@ impl AppState {
                 connection.restored = true;
             }
             let mut value = Bootstrap::disconnected();
+            value.online = Some(online);
             value.connected = connection.session.is_some();
             value.credential_status = connection.status;
             value.credential_warning = connection.warning.clone();
@@ -248,8 +252,20 @@ impl AppState {
     }
 
     pub fn favorite_set(&self, media_ref: &MediaRef, saved: bool) -> Result<(), AppError> {
-        let (provider, profile) = self.active_scope()?;
+        let provider = if crate::online::is_online(&media_ref.id) {
+            self.online_scope_for(media_ref)?
+        } else {
+            self.active_scope()?.0
+        };
         self.with_store(|s| {
+            let profile = s
+                .active_profile()?
+                .ok_or_else(|| AppError::validation("Select a profile."))?;
+            if s.get_item(&provider, media_ref.kind, &media_ref.id)?
+                .is_none()
+            {
+                return Err(AppError::validation("Load this title before saving it."));
+            }
             s.set_favorite(
                 &provider,
                 &profile,
@@ -261,13 +277,46 @@ impl AppState {
     }
 
     pub fn favorites_list(&self, offset: usize, limit: usize) -> Result<Page<MediaItem>, AppError> {
-        let (provider, profile) = self.active_scope()?;
-        self.with_store(|s| s.favorites_page(&provider, &profile, offset, limit))
+        self.with_store(|s| {
+            let limit = limit.clamp(1, 200);
+            let Some(profile) = s.active_profile()? else {
+                return Ok(Page {
+                    items: vec![],
+                    total: 0,
+                    offset,
+                    limit,
+                });
+            };
+            let mut items = Vec::new();
+            for scope in activity_scopes(s)? {
+                for media_ref in s.all_favorite_refs(&scope, &profile)? {
+                    if let Some((item, _)) = s.get_item(&scope, media_ref.kind, &media_ref.id)? {
+                        items.push(item);
+                    }
+                }
+            }
+            Ok(Page {
+                total: items.len(),
+                items: items.into_iter().skip(offset).take(limit).collect(),
+                offset,
+                limit,
+            })
+        })
     }
 
     pub fn history_list(&self) -> Result<Vec<HistoryItem>, AppError> {
-        let (provider, profile) = self.active_scope()?;
-        self.with_store(|s| s.history_items(&provider, &profile))
+        self.with_store(|s| {
+            let Some(profile) = s.active_profile()? else {
+                return Ok(vec![]);
+            };
+            let mut items = Vec::new();
+            for scope in activity_scopes(s)? {
+                items.extend(s.history_items(&scope, &profile)?);
+            }
+            items.sort_by_key(|h| std::cmp::Reverse(h.updated_at_ms));
+            items.truncate(40);
+            Ok(items)
+        })
     }
 
     pub fn settings_update(
@@ -286,6 +335,17 @@ impl AppState {
             )
         })
     }
+}
+
+fn activity_scopes(store: &Store) -> Result<Vec<String>, AppError> {
+    let mut scopes = Vec::new();
+    if let Some(iptv) = store.active_provider_id()? {
+        scopes.push(iptv);
+    }
+    if let Some(online) = store.preference("online_scope")? {
+        scopes.push(online);
+    }
+    Ok(scopes)
 }
 
 #[cfg(test)]

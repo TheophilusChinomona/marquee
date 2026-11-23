@@ -299,6 +299,9 @@ pub async fn media_details(
     state: tauri::State<'_, AppState>,
     catalog: tauri::State<'_, CatalogService>,
 ) -> Result<MediaDetails, AppError> {
+    if crate::online::is_online(&args.media_ref.id) {
+        return state.online_details(&args.media_ref).await;
+    }
     catalog.media_details(&state, &args.media_ref).await
 }
 
@@ -315,11 +318,153 @@ pub async fn epg_query(
 
 #[tauri::command]
 pub fn home_sections(state: tauri::State<'_, AppState>) -> Result<HomeSectionsResponse, AppError> {
-    let (provider_id, profile_id) = state.active_scope()?;
     let refreshing = state.refreshing.load(std::sync::atomic::Ordering::Relaxed);
-    state.with_store(|s| {
-        recommendations::build_home_sections(s, &provider_id, &profile_id, refreshing)
-    })
+    let mut home = state.with_store(|s| match (s.active_provider_id()?, s.active_profile()?) {
+        (Some(provider), Some(profile)) => {
+            recommendations::build_home_sections(s, &provider, &profile, refreshing)
+        }
+        _ => Ok(HomeSectionsResponse {
+            hero: vec![],
+            sections: vec![],
+            cache_status: Default::default(),
+        }),
+    })?;
+    let history: Vec<_> = state
+        .history_list()?
+        .into_iter()
+        .filter_map(|h| h.item)
+        .collect();
+    let favorites = state.favorites_list(0, 200)?.items;
+    home.sections
+        .retain(|s| s.id != "continue-watching" && s.id != "my-list");
+    // Replace both source-specific activity rails with the combined profile view.
+    home.sections
+        .retain(|s| s.kind != "continue" && s.kind != "my-list");
+    if !history.is_empty() {
+        home.sections.insert(
+            0,
+            crate::models::HomeSection {
+                id: "continue-watching".into(),
+                kind: "continue".into(),
+                eyebrow: None,
+                title: "Continue Watching".into(),
+                items: history,
+            },
+        );
+    }
+    if !favorites.is_empty() {
+        home.sections.push(crate::models::HomeSection {
+            id: "my-list".into(),
+            kind: "myList".into(),
+            eyebrow: None,
+            title: "My List".into(),
+            items: favorites,
+        });
+    }
+    Ok(home)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineConnectArgs {
+    pub base_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub remember: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineImportArgs {
+    pub base_url: String,
+    pub remember: bool,
+}
+#[derive(Deserialize)]
+pub struct OnlineSearchArgs {
+    pub query: String,
+}
+
+#[tauri::command]
+pub async fn online_connect(
+    app: tauri::AppHandle,
+    args: OnlineConnectArgs,
+    state: tauri::State<'_, AppState>,
+    player: tauri::State<'_, PlayerService>,
+) -> Result<Bootstrap, AppError> {
+    state
+        .connect_online(
+            &args.base_url,
+            &args.client_id,
+            &args.client_secret,
+            args.remember,
+        )
+        .await?;
+    player.stop_and_save(&app, &state);
+    state.bootstrap()
+}
+#[tauri::command]
+pub async fn online_disconnect(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    player: tauri::State<'_, PlayerService>,
+) -> Result<(), AppError> {
+    let result = state.disconnect_online().await;
+    if player
+        .snapshot()?
+        .media
+        .is_some_and(|m| crate::online::is_online(&m.media_ref.id))
+    {
+        player.stop_and_save(&app, &state);
+    }
+    result
+}
+#[tauri::command]
+pub async fn online_check(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::online::OnlineStatus, AppError> {
+    let (session, generation) = state.online.session()?;
+    session.health().await?;
+    if !state.online.is_current(&session.scope(), generation) {
+        return Err(AppError::unauthenticated(
+            "Online connection changed. Please retry.",
+        ));
+    }
+    state.online_status()
+}
+#[tauri::command]
+pub async fn online_import_development(
+    app: tauri::AppHandle,
+    args: OnlineImportArgs,
+    state: tauri::State<'_, AppState>,
+    player: tauri::State<'_, PlayerService>,
+) -> Result<Bootstrap, AppError> {
+    #[cfg(debug_assertions)]
+    {
+        let credentials = crate::online::development_credentials()?;
+        state
+            .connect_online(
+                &args.base_url,
+                &credentials.username,
+                &credentials.password,
+                args.remember,
+            )
+            .await?;
+        player.stop_and_save(&app, &state);
+        state.bootstrap()
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let _ = (app, args, state, player);
+        Err(AppError::unsupported(
+            "Development credential import is unavailable in release builds.",
+        ))
+    }
+}
+#[tauri::command]
+pub async fn online_search(
+    args: OnlineSearchArgs,
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<MediaItem>, AppError> {
+    state.search_online(&args.query).await
 }
 
 #[tauri::command]
@@ -355,6 +500,24 @@ pub async fn player_control(
     command: PlayerControlCommand,
     state: tauri::State<'_, AppState>,
     player: tauri::State<'_, PlayerService>,
+    catalog: tauri::State<'_, CatalogService>,
 ) -> Result<PlayerSnapshot, AppError> {
+    let snapshot = player.snapshot()?;
+    if matches!(command, PlayerControlCommand::Resume)
+        && snapshot.status == "ended"
+        && let Some(media) = snapshot.media
+        && crate::online::is_online(&media.media_ref.id)
+    {
+        return player
+            .start(
+                &app,
+                &state,
+                &catalog,
+                &media.media_ref,
+                snapshot.episode_id.as_deref(),
+                false,
+            )
+            .await;
+    }
     player.control(&app, &state, command)
 }

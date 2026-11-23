@@ -62,10 +62,19 @@ pub fn resize(window: &tauri::WebviewWindow, surface: u64) {
         return;
     }
     if let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) {
-        let top = (80.0 * scale).round() as i32;
-        let bottom = (180.0 * scale).round() as i32;
+        // In fullscreen the native surface must fill the whole window; the React
+        // header/controls are collapsed, so no bands are reserved.
+        let (top, bottom) = if window.is_fullscreen().unwrap_or(false) {
+            (0, 0)
+        } else {
+            (
+                (80.0 * scale).round() as i32,
+                (180.0 * scale).round() as i32,
+            )
+        };
         // SAFETY: child HWND was created on this same UI thread and remains live
-        // for the parent's lifetime. Position leaves React header/controls visible.
+        // for the parent's lifetime. Position leaves React header/controls visible
+        // while windowed and covers the full window while fullscreen.
         unsafe {
             SetWindowPos(
                 surface as _,

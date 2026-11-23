@@ -36,6 +36,8 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState<NavPage>('Home');
+  const [connectMode, setConnectMode] = useState<'iptv' | 'online'>();
+  const [resolving, setResolving] = useState(false);
   const [selectedRef, setSelectedRef] = useState<MediaRef | null>(null);
   const [settingsTab, setSettingsTab] = useState('General');
   const [profileMenu, setProfileMenu] = useState(false);
@@ -83,10 +85,10 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     try {
       const value = await api.bootstrap();
       setState(value);
-      if (!value.connected && !value.cacheStatus?.hasCatalogue) {
+      if (!value.connected && !value.cacheStatus?.hasCatalogue && !value.online?.baseUrl) {
         setPage('Connect');
       }
-      if (value.activeProviderId && value.activeProfileId) {
+      if ((value.activeProviderId || value.online?.baseUrl) && value.activeProfileId) {
         await loadFavoritesSnapshot();
       } else {
         favReq.invalidate();
@@ -105,10 +107,10 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       .then((value) => {
         if (!active) return;
         setState(value);
-        if (!value.connected && !value.cacheStatus?.hasCatalogue) {
+        if (!value.connected && !value.cacheStatus?.hasCatalogue && !value.online?.baseUrl) {
           setPage('Connect');
         }
-        if (value.activeProviderId && value.activeProfileId) {
+        if ((value.activeProviderId || value.online?.baseUrl) && value.activeProfileId) {
           void loadFavoritesSnapshot();
         }
         if (api.playerSnapshot) {
@@ -269,7 +271,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     );
   }
 
-  const hasAccountOrCache = state.connected || state.cacheStatus?.hasCatalogue;
+  const hasAccountOrCache = state.connected || state.cacheStatus?.hasCatalogue || Boolean(state.online?.baseUrl);
   const activeProfile =
     state.profiles.find((p) => p.id === state.activeProfileId) ?? state.profiles[0];
 
@@ -284,11 +286,13 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     setState(next);
     setSelectedRef(null);
     setPage('Home');
+    setRefreshStamp((stamp) => stamp + 1);
+    setActivePlayer(null);
     void loadFavoritesSnapshot();
     if (next.credentialWarning) {
       notify(next.credentialWarning);
     } else {
-      notify('Connected to provider.');
+      notify(next.online?.warning ?? (next.connected ? 'Connected to provider.' : 'Connected to online library.'));
     }
     if (next.connected && (!next.cacheStatus.hasCatalogue || next.cacheStatus.stale)) {
       void triggerRefresh();
@@ -318,21 +322,24 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   }
 
   function handleStartPlayback(ref: MediaRef, episodeId?: string, resume = true) {
-    if (!state?.connected) {
-      notify('Reconnect your provider to start playback.');
+    if (ref.id.startsWith('online:') ? !state?.online?.connected : !state?.connected) {
+      notify(ref.id.startsWith('online:') ? 'Reconnect your online library to start playback.' : 'Reconnect your provider to start playback.');
       return;
     }
     if (!api.playerStart) {
       notify('Playback is unavailable in this mode.');
       return;
     }
+    if (resolving) return;
+    setResolving(true);
     setLastPlayArgs({ ref, episodeId, resume });
     void api
       .playerStart({ ref, episodeId, resume })
       .then((snap) => {
         setActivePlayer(snap);
       })
-      .catch((err) => notify(extractAppError(err, 'Unable to start playback.').message));
+      .catch((err) => notify(extractAppError(err, 'Unable to start playback.').message))
+      .finally(() => setResolving(false));
   }
 
   if (!hasAccountOrCache && page === 'Connect') {
@@ -342,6 +349,9 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
           <Connect
             api={api}
             initialUrl={state.providerUrl}
+            onlineUrl={state.online?.baseUrl}
+            developmentImport={state.online?.developmentImport}
+            initialMode={connectMode ?? (state.online?.baseUrl && !state.connected ? 'online' : 'iptv')}
             canGoBack={false}
             onConnected={handleConnected}
           />
@@ -359,6 +369,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   return (
     <div className="desktop-app">
       <Header
+        iptvAvailable={Boolean(state.connected || state.cacheStatus.hasCatalogue)}
         page={page}
         hasDetail={Boolean(selectedRef)}
         activeProfile={activeProfile}
@@ -413,6 +424,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             api={api}
             profileId={state.activeProfileId}
             refreshStamp={refreshStamp}
+            online={state.online}
             connected={state.connected}
             savedKeys={savedKeys}
             onSelect={handleSelectItem}
@@ -421,6 +433,8 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             onNavigate={go}
             onRefreshLibrary={() => void triggerRefresh()}
           />
+        ) : (page === 'Movies' || page === 'Series') && !(state.connected || state.cacheStatus.hasCatalogue) ? (
+          <section className="section-pad"><EmptyState title="Search the online library" description="Find movies and series by title." action="Search online library" onAction={() => go('Search')} /></section>
         ) : page === 'Movies' || page === 'Series' ? (
           <Browse
             key={page}
@@ -434,6 +448,9 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
           />
         ) : page === 'Search' ? (
           <Search
+            key={`${state.online?.baseUrl}:${state.online?.connected}`}
+            onlineEnabled={Boolean(state.online?.connected)}
+            localEnabled={Boolean(state.activeProviderId)}
             api={api}
             dense={state.settings.compactLibrary}
             savedKeys={savedKeys}
@@ -450,12 +467,15 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             savedKeys={savedKeys}
             onSelect={handleSelectItem}
             onToggleSave={(item) => void handleToggleSave(item)}
-            onExploreMovies={() => go('Movies')}
+            onExploreMovies={() => go(state.connected || state.cacheStatus.hasCatalogue ? 'Movies' : 'Search')}
           />
         ) : page === 'Connect' ? (
           <Connect
             api={api}
             initialUrl={state.providerUrl}
+            onlineUrl={state.online?.baseUrl}
+            developmentImport={state.online?.developmentImport}
+            initialMode={connectMode ?? (state.online?.baseUrl && !state.connected ? 'online' : 'iptv')}
             canGoBack={hasAccountOrCache}
             onBack={() => go('Settings')}
             onConnected={handleConnected}
@@ -475,7 +495,8 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             initialTab={settingsTab}
             refreshProgress={refreshProgress}
             onGoProfiles={() => go('Profiles')}
-            onGoConnect={() => go('Connect')}
+            onGoOnline={() => { setConnectMode('online'); go('Connect'); }}
+            onGoConnect={() => { setConnectMode('iptv'); go('Connect'); }}
             onRefreshLibrary={() => void triggerRefresh()}
             onDisconnected={() => void loadBootstrap()}
             onSettingsChanged={handleSettingsChanged}
@@ -504,7 +525,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
           <span>Your seat. Your stories.</span>
           <div>
             <span className="footer-dot" />{' '}
-            {state.connected ? 'Provider connected' : 'Offline cache'}
+            {state.online?.connected ? 'Online library connected' : state.connected ? 'Provider connected' : 'Offline cache'}
             <span className="footer-separator">/</span>
             <button
               type="button"
@@ -526,6 +547,8 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         </div>
       )}
 
+      {resolving && <div className="resolving-overlay" role="status">Resolving stream...</div>}
+
       {activePlayer && (
         <Player
           api={api}
@@ -534,8 +557,10 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
             setActivePlayer(null);
             setRefreshStamp((s) => s + 1);
           }}
-          onRetry={() => {
-            if (lastPlayArgs) {
+          onRetry={(snapshot) => {
+            if (snapshot.media) {
+              handleStartPlayback(snapshot.media.ref, snapshot.episodeId, true);
+            } else if (lastPlayArgs) {
               handleStartPlayback(lastPlayArgs.ref, lastPlayArgs.episodeId, true);
             }
           }}

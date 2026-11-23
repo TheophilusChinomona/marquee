@@ -5,11 +5,28 @@ on:
     paths:
       - 'desktop/**'
       - '.github/workflows/desktop.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/desktop-release*'
+      - 'scripts/release-version*'
   pull_request:
     paths:
       - 'desktop/**'
       - '.github/workflows/desktop.yml'
+      - '.github/workflows/release.yml'
+      - 'scripts/desktop-release*'
+      - 'scripts/release-version*'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_version:
+        type: string
+        required: true
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
   windows:
@@ -38,32 +55,55 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      - name: Run frontend tests and build
+      - name: Test shared release helpers
+        run: node --test scripts/*.test.cjs
+
+      - name: Run frontend tests
         working-directory: desktop
-        run: |
-          npm test -- --run
-          npm run build
+        run: npm test -- --run
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Set shared release version and enable signed updates
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node scripts/desktop-release.cjs prepare "$env:RELEASE_VERSION"
 
       - name: Verify pinned Windows libmpv runtime
         working-directory: desktop
         run: powershell -ExecutionPolicy Bypass -File scripts/setup-mpv.ps1
 
-      - name: Run Rust formatting, unit tests, and clippy
+      - name: Check Rust formatting
         working-directory: desktop/src-tauri
-        run: |
-          cargo fmt --check
-          cargo test --locked
-          cargo clippy --locked --all-targets -- -D warnings
+        run: cargo fmt --check
+
+      - name: Run Rust unit tests
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Run Rust clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Build Windows NSIS installer
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.release_version != '' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npx tauri build --config src-tauri/tauri.windows.conf.json --bundles nsis
+
+      - name: Stage Windows installer and release signature
+        run: node scripts/desktop-release.cjs stage windows ${{ inputs.release_version != '' && 'signed' || 'unsigned' }}
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: marquee-desktop-windows-x86_64
-          path: desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: desktop/release/*
+          if-no-files-found: error
 
   linux:
     name: Linux x86-64 (Ubuntu 24.04)
@@ -102,31 +142,52 @@ jobs:
         working-directory: desktop
         run: npm ci
 
-      - name: Run frontend tests and build
+      - name: Test shared release helpers
+        run: node --test scripts/*.test.cjs
+
+      - name: Run frontend tests
         working-directory: desktop
-        run: |
-          npm test -- --run
-          npm run build
+        run: npm test -- --run
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Set shared release version and enable signed updates
+        if: inputs.release_version != ''
+        env:
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: node scripts/desktop-release.cjs prepare "$RELEASE_VERSION"
 
       - name: Verify Linux libmpv runtime
         working-directory: desktop
         run: bash scripts/setup-mpv.sh
 
-      - name: Run Rust formatting, unit tests, and clippy
+      - name: Check Rust formatting
         working-directory: desktop/src-tauri
-        run: |
-          cargo fmt --check
-          cargo test --locked
-          cargo clippy --locked --all-targets -- -D warnings
+        run: cargo fmt --check
+
+      - name: Run Rust unit tests
+        working-directory: desktop/src-tauri
+        run: cargo test --locked
+
+      - name: Run Rust clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Build Linux AppImage and Debian package
         working-directory: desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.release_version != '' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: npx tauri build --config src-tauri/tauri.linux.conf.json --bundles deb,appimage
+
+      - name: Stage Linux installers and release signature
+        run: node scripts/desktop-release.cjs stage linux ${{ inputs.release_version != '' && 'signed' || 'unsigned' }}
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
           name: marquee-desktop-linux-x86_64
-          path: |
-            desktop/src-tauri/target/release/bundle/deb/*.deb
-            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          path: desktop/release/*
+          if-no-files-found: error

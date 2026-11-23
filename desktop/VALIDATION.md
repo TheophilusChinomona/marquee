@@ -89,4 +89,15 @@ Added an independent **Online Library** connection to the desktop app: sign in w
 ## Pending / Unverified Gates
 - **Linux native build & display/audio playback:** This development host is Windows-only without WSL/Linux. Linux x86-64 `.deb`/AppImage packaging (`.github/workflows/desktop.yml`) and X11/XWayland/Wayland native video surface embedding (`player/surface.rs`) remain unverified until executed on a Linux display host.
 - **Clean-machine install/launch/uninstall smoke tests:** End-to-end installer execution and real provider stream playback on clean Windows and Ubuntu machines have not yet been run.
-- **Signed desktop updates:** Explicitly unconfigured until release signing keys and an update endpoint are provided; no keys were generated and no release was published.
+- **Signed desktop updates:** Configured by the shared release implementation below; real two-version installation tests remain pending. No release was published from this worktree.
+
+## Shared Android/Desktop Releases — 2026-11-23
+
+- Shared monotonic version selection and synchronized desktop package, Tauri, and Cargo build metadata; one release waits for Android, Windows NSIS, and Linux AppImage/deb builds.
+- Persistent Tauri update signing identity generated outside the repository with restricted local backup; GitHub Actions signing secret configured and a local signing probe succeeded. Public verification key and latest-release update endpoint configured in the app.
+- **Frontend:** 23 tests pass, including eight updater tests covering startup discovery, no-update/network states, download progress, explicit install order, signature/download failure, restart failure and handle cleanup, Debian download behavior, development/browser gating, and dismissal. Native production frontend build passes.
+- **Release helpers/backend:** 32 tests pass after installing resolver dependencies. Tests cover legacy version normalization, rollback prevention, metadata synchronization, artifact staging, missing assets/signatures, and manifest platform URLs.
+- **Rust:** `cargo fmt --check`, `cargo test --locked` (35 pass, two existing opt-in tests ignored), and `cargo clippy --locked --all-targets -- -D warnings` pass on Windows.
+- **Workflows:** actionlint and `git diff --check` pass. Windows frontend/Rust checks run as separate steps so later successful commands cannot mask earlier failures. PR builds remain independent of signing secrets.
+- Independent whole-change review completed; fixed its updater-resource cleanup finding and verified the restart retry regression test. Follow-up review reported no further findings.
+- **Still pending:** execution of the amended platform release pipeline, publication, and real updater-enabled-version-to-newer-version smoke tests on Windows and Linux AppImage. Existing `0.1.0` users must manually install the first updater-enabled release once.

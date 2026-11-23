@@ -180,7 +180,7 @@ The bundled JSON catalogues in `assets/` make the Home rails work offline and ke
 
 A native desktop edition built with **Tauri 2**, **React + TypeScript**, **Rust**, **SQLite**, and embedded **libmpv** lives under [`desktop/`](desktop/). It brings the same cinematic interface, Xtream Codes catalogue sync, local profiles, Continue Watching, episode queues, Live TV guide, and on-device recommendations to desktop machines.
 
-See [`desktop/README.md`](desktop/README.md) for prerequisites, development commands, and Windows/Linux installer builds. Desktop builds and updates stay completely separate from the Android APK and root `version.json`.
+See [`desktop/README.md`](desktop/README.md) for prerequisites, development commands, and Windows/Linux installers. Desktop and Android share one version and GitHub Release. Windows and Linux AppImage builds support signed in-app updates through `latest.json`; Android continues to use its own compatible `version.json` manifest.
 
 ## Privacy
 
@@ -201,8 +201,12 @@ one is published, and handed to the Android TV installer — which always asks f
 confirmation. Nothing installs silently.
 
 Code merges into the default branch (`master`, or `main` if renamed) now run the
-release workflow: backend tests, signed APK build, then APK and SHA-256 manifest
-published together in a GitHub release. Future builds read the release's
+release workflow: backend and desktop tests, signed Android/Windows/Linux builds,
+then all installers, signatures, and update manifests published together in one GitHub Release.
+Desktop release builds check on startup and offer **Update and restart**, with a manual
+check under **Settings → About Marquee**. Debian users install the new `.deb` manually.
+Existing desktop builds without an updater need one manual installation first.
+Future Android builds read the release's
 `version.json`; the root file remains a bootstrap for older installed versions.
 Each release increments `versionCode` and the patch version automatically, unless
 the prepared Gradle version is already newer. Documentation-only and bootstrap

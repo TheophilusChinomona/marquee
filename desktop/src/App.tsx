@@ -26,6 +26,7 @@ import Player from './features/Player';
 import Profiles from './features/Profiles';
 import Search from './features/Search';
 import Settings from './features/Settings';
+import { UpdatesProvider, UpdateNotice } from './features/DesktopUpdates';
 import { useLatestRequest } from './hooks/useLatestRequest';
 import './App.css';
 
@@ -572,7 +573,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
 
 export default function App() {
   return isNative() ? (
-    <NativeApp />
+    <UpdatesProvider><NativeApp /><UpdateNotice /></UpdatesProvider>
   ) : (
     <Suspense fallback={<p>Opening preview…</p>}>
       <PreviewApp />

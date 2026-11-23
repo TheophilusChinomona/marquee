@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "bundle": {
+    "targets": ["nsis"],
+    "resources": {
+      "resources/mpv/libmpv-2.dll": "resources/mpv/libmpv-2.dll",
+      "resources/mpv/LICENSE.LGPL": "resources/mpv/LICENSE.LGPL",
+      "../resources/THIRD_PARTY_NOTICES.md": "resources/THIRD_PARTY_NOTICES.md"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

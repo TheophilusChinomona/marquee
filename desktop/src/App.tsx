@@ -26,6 +26,7 @@ import Player from './features/Player';
 import Profiles from './features/Profiles';
 import Search from './features/Search';
 import Settings from './features/Settings';
+import { useLatestRequest } from './hooks/useLatestRequest';
 import './App.css';
 
 const PreviewApp = lazy(() => import('./PreviewApp'));
@@ -50,6 +51,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     resume: boolean;
   } | null>(null);
   const activeRefreshIdRef = useRef<string | null>(null);
+  const favReq = useLatestRequest();
   const scroller = useRef<HTMLElement>(null);
 
   const notify = useCallback((message: string) => setToast(message), []);
@@ -61,14 +63,20 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
   }, [toast]);
 
   const loadFavoritesSnapshot = useCallback(async () => {
+    const token = favReq.begin();
+    setSavedKeys(new Set());
     if (!api.favoritesList) return;
     try {
       const res = await api.favoritesList({ offset: 0, limit: 200 });
-      setSavedKeys(new Set(res.items.map((item) => mediaKey(item.ref))));
+      if (favReq.isCurrent(token)) {
+        setSavedKeys(new Set(res.items.map((item) => mediaKey(item.ref))));
+      }
     } catch {
-      setSavedKeys(new Set());
+      if (favReq.isCurrent(token)) {
+        setSavedKeys(new Set());
+      }
     }
-  }, [api]);
+  }, [api, favReq]);
 
   const loadBootstrap = useCallback(async () => {
     setFailed(false);
@@ -80,11 +88,14 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       }
       if (value.activeProviderId && value.activeProfileId) {
         await loadFavoritesSnapshot();
+      } else {
+        favReq.invalidate();
+        setSavedKeys(new Set());
       }
     } catch {
       setFailed(true);
     }
-  }, [api, loadFavoritesSnapshot]);
+  }, [api, favReq, loadFavoritesSnapshot]);
 
   useEffect(() => {
     let active = true;
@@ -127,13 +138,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
     api
       .onCatalogProgress((ev) => {
         if (disposed) return;
-        if (
-          activeRefreshIdRef.current &&
-          ev.refreshId &&
-          ev.refreshId !== activeRefreshIdRef.current &&
-          ev.status === 'running'
-        ) {
-          // Track latest refresh ID if backend initiated it
+        if (!activeRefreshIdRef.current && ev.refreshId) {
           activeRefreshIdRef.current = ev.refreshId;
         }
         if (activeRefreshIdRef.current && ev.refreshId !== activeRefreshIdRef.current) {
@@ -141,11 +146,15 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
         }
         setRefreshProgress(ev);
         if (ev.status === 'completed') {
+          activeRefreshIdRef.current = null;
           setRefreshStamp((s) => s + 1);
           void loadBootstrap();
           notify('Library updated.');
-        } else if (ev.status === 'failed') {
-          notify(ev.error?.message ?? 'Library refresh failed. Keeping previous catalogue.');
+        } else if (ev.status === 'failed' || ev.status === 'cancelled') {
+          activeRefreshIdRef.current = null;
+          if (ev.status === 'failed') {
+            notify(ev.error?.message ?? 'Library refresh failed. Keeping previous catalogue.');
+          }
           void loadBootstrap();
         }
       })
@@ -185,6 +194,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       notify('Library refresh is unavailable.');
       return;
     }
+    activeRefreshIdRef.current = null;
     setState((prev) =>
       prev ? { ...prev, cacheStatus: { ...prev.cacheStatus, refreshing: true } } : prev,
     );
@@ -194,6 +204,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
       setRefreshStamp((s) => s + 1);
       await loadBootstrap();
     } catch (err) {
+      activeRefreshIdRef.current = null;
       notify(extractAppError(err, 'Unable to refresh library.').message);
       await loadBootstrap();
     }
@@ -412,6 +423,7 @@ export function NativeApp({ api = nativeApi }: { api?: DesktopApi }) {
           />
         ) : page === 'Movies' || page === 'Series' ? (
           <Browse
+            key={page}
             api={api}
             kind={page === 'Series' ? 'series' : 'movie'}
             dense={state.settings.compactLibrary}

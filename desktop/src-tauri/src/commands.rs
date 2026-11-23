@@ -144,7 +144,12 @@ pub async fn provider_connect(
     catalog.cancel_active_refresh();
     catalog.clear_epg_cache();
     state
-        .connect(&args.base_url, &args.username, &args.password, args.remember)
+        .connect(
+            &args.base_url,
+            &args.username,
+            &args.password,
+            args.remember,
+        )
         .await
 }
 
@@ -158,7 +163,7 @@ pub async fn provider_disconnect(
     player.stop_and_save(&app, &state);
     catalog.cancel_active_refresh();
     catalog.clear_epg_cache();
-    state.disconnect()
+    state.disconnect().await
 }
 
 #[tauri::command]

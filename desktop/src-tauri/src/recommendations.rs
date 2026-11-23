@@ -17,8 +17,17 @@ fn stable_hash(input: &str) -> u64 {
     hash
 }
 
-fn score_item(affinity: &HashMap<String, f64>, category_id: &str, seed: u64, id: &str) -> f64 {
-    let known = affinity.get(category_id).copied().unwrap_or(0.0);
+fn score_item(
+    affinity: &HashMap<(MediaKind, String), f64>,
+    kind: MediaKind,
+    category_id: &str,
+    seed: u64,
+    id: &str,
+) -> f64 {
+    let known = affinity
+        .get(&(kind, category_id.to_string()))
+        .copied()
+        .unwrap_or(0.0);
     let noise_bucket = (stable_hash(id) ^ seed) % 1000;
     let noise = (noise_bucket as f64) / 1000.0;
     known * 3.0 + noise * 0.9
@@ -45,7 +54,7 @@ pub fn for_you(
         return Ok(Vec::new());
     };
 
-    let mut affinity: HashMap<String, f64> = HashMap::new();
+    let mut affinity: HashMap<(MediaKind, String), f64> = HashMap::new();
     let mut seen: HashSet<(MediaKind, String)> = HashSet::new();
 
     for entry in &history {
@@ -53,19 +62,21 @@ pub fn for_you(
             continue;
         };
         seen.insert((kind, entry.media_id.clone()));
-        if let Some(item) =
-            store.get_catalogue_item_for_generation(provider_id, &generation, kind, &entry.media_id)?
+        if let Some(item) = store.get_catalogue_item_for_generation(
+            provider_id,
+            &generation,
+            kind,
+            &entry.media_id,
+        )? && !item.category_id.trim().is_empty()
         {
-            if !item.category_id.trim().is_empty() {
-                let progress = if entry.duration_ms > 0 {
-                    (entry.position_ms as f64 / entry.duration_ms as f64).clamp(0.0, 1.0)
-                } else if entry.completed {
-                    1.0
-                } else {
-                    0.0
-                };
-                *affinity.entry(item.category_id).or_insert(0.0) += 1.0 + progress * 2.0;
-            }
+            let progress = if entry.duration_ms > 0 {
+                (entry.position_ms as f64 / entry.duration_ms as f64).clamp(0.0, 1.0)
+            } else if entry.completed {
+                1.0
+            } else {
+                0.0
+            };
+            *affinity.entry((kind, item.category_id)).or_insert(0.0) += 1.0 + progress * 2.0;
         }
     }
 
@@ -87,18 +98,20 @@ pub fn for_you(
     )?;
 
     let seed = stable_hash(profile_id);
-    let mut buckets: HashMap<String, Vec<ScoredItem>> = HashMap::new();
+    let mut buckets: HashMap<(MediaKind, String), Vec<ScoredItem>> = HashMap::new();
 
     let mut collect = |items: Vec<MediaItem>, bonus: f64| {
         for item in items {
-            if seen.contains(&(item.media_ref.kind, item.media_ref.id.clone())) {
+            let kind = item.media_ref.kind;
+            if seen.contains(&(kind, item.media_ref.id.clone())) {
                 continue;
             }
-            let bucket = buckets.entry(item.category_id.clone()).or_default();
+            let bucket = buckets.entry((kind, item.category_id.clone())).or_default();
             if bucket.len() >= MAX_CANDIDATES_PER_CATEGORY {
                 continue;
             }
-            let score = score_item(&affinity, &item.category_id, seed, &item.media_ref.id) + bonus;
+            let score =
+                score_item(&affinity, kind, &item.category_id, seed, &item.media_ref.id) + bonus;
             bucket.push(ScoredItem { item, score });
         }
     };
@@ -114,11 +127,15 @@ pub fn for_you(
         });
     }
 
-    let mut strongest_first: Vec<(String, Vec<ScoredItem>)> = buckets.into_iter().collect();
-    strongest_first.sort_by(|(cat_a, a), (cat_b, b)| {
+    let mut strongest_first: Vec<((MediaKind, String), Vec<ScoredItem>)> =
+        buckets.into_iter().collect();
+    strongest_first.sort_by(|((ka, cat_a), a), ((kb, cat_b), b)| {
         let max_a = a.first().map(|s| s.score).unwrap_or(0.0);
         let max_b = b.first().map(|s| s.score).unwrap_or(0.0);
-        max_b.total_cmp(&max_a).then_with(|| cat_a.cmp(cat_b))
+        max_b
+            .total_cmp(&max_a)
+            .then_with(|| ka.as_str().cmp(kb.as_str()))
+            .then_with(|| cat_a.cmp(cat_b))
     });
 
     let mut out: Vec<MediaItem> = Vec::with_capacity(limit);
@@ -183,8 +200,12 @@ pub fn because_you_watched(
         if kind == MediaKind::Live {
             continue;
         }
-        let Some(item) =
-            store.get_catalogue_item_for_generation(provider_id, &generation, kind, &entry.media_id)?
+        let Some(item) = store.get_catalogue_item_for_generation(
+            provider_id,
+            &generation,
+            kind,
+            &entry.media_id,
+        )?
         else {
             continue;
         };
@@ -376,7 +397,13 @@ mod tests {
     use super::*;
     use crate::provider::{ParsedCatalogItem, ParsedCategory, normalize_search_name};
 
-    fn make_item(kind: MediaKind, id: &str, cat: &str, rating: f64, added: i64) -> ParsedCatalogItem {
+    fn make_item(
+        kind: MediaKind,
+        id: &str,
+        cat: &str,
+        rating: f64,
+        added: i64,
+    ) -> ParsedCatalogItem {
         let name = format!("Title {id}");
         ParsedCatalogItem {
             kind,
@@ -406,18 +433,45 @@ mod tests {
             "g1",
             MediaKind::Movie,
             &[
-                ParsedCategory { id: "sci".into(), name: "Sci-Fi".into() },
-                ParsedCategory { id: "com".into(), name: "Comedy".into() },
-                ParsedCategory { id: "dra".into(), name: "Drama".into() },
+                ParsedCategory {
+                    id: "sci".into(),
+                    name: "Sci-Fi".into(),
+                },
+                ParsedCategory {
+                    id: "com".into(),
+                    name: "Comedy".into(),
+                },
+                ParsedCategory {
+                    id: "dra".into(),
+                    name: "Drama".into(),
+                },
             ],
         )
         .unwrap();
 
         let mut items = Vec::new();
         for i in 1..=6 {
-            items.push(make_item(MediaKind::Movie, &format!("s{i}"), "sci", 8.0, 100 + i));
-            items.push(make_item(MediaKind::Movie, &format!("c{i}"), "com", 8.0, 100 + i));
-            items.push(make_item(MediaKind::Movie, &format!("d{i}"), "dra", 8.0, 100 + i));
+            items.push(make_item(
+                MediaKind::Movie,
+                &format!("s{i}"),
+                "sci",
+                8.0,
+                100 + i,
+            ));
+            items.push(make_item(
+                MediaKind::Movie,
+                &format!("c{i}"),
+                "com",
+                8.0,
+                100 + i,
+            ));
+            items.push(make_item(
+                MediaKind::Movie,
+                &format!("d{i}"),
+                "dra",
+                8.0,
+                100 + i,
+            ));
         }
         db.stage_items(&provider, "g1", &items).unwrap();
         db.publish_generation(&provider, "g1", "r1").unwrap();

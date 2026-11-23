@@ -1,20 +1,20 @@
 use crate::{
     models::{
-        AppError, CatalogProgressEvent, EpgProgram, EpgQueryResponse, MediaDetails, MediaKind,
-        MediaRef,
+        AppError, CatalogProgressEvent, EpgProgram, EpgQueryResponse, EpisodeDetails, MediaDetails,
+        MediaKind, MediaRef,
     },
     provider::{CachedDetailsPayload, ProviderSession, ResolvedStream},
     state::AppState,
     store::now_ms,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, Semaphore, watch};
 
 const MAX_IN_FLIGHT_CATEGORIES: usize = 4;
 const EPG_MAX_CHANNELS: usize = 50;
@@ -24,6 +24,7 @@ const EPG_CACHE_TTL_MS: i64 = 10 * 60 * 1000;
 struct ActiveRefresh {
     refresh_id: String,
     cancelled: Arc<AtomicBool>,
+    cancel_notify: Arc<Notify>,
 }
 
 struct EpgCacheEntry {
@@ -31,19 +32,39 @@ struct EpgCacheEntry {
     programs: Vec<EpgProgram>,
 }
 
+type EpgInflightMap = Arc<Mutex<HashMap<(String, String), watch::Receiver<bool>>>>;
+type EpgCacheMap = Arc<Mutex<HashMap<(String, String), EpgCacheEntry>>>;
+
+/// Ensures an in-flight EPG key is always removed and waiters woken even if the task is dropped.
+struct EpgInflightGuard {
+    inflight: EpgInflightMap,
+    key: (String, String),
+    tx: watch::Sender<bool>,
+}
+
+impl Drop for EpgInflightGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.inflight.lock() {
+            map.remove(&self.key);
+        }
+        let _ = self.tx.send(true);
+    }
+}
+
 #[derive(Default)]
 pub struct CatalogService {
     active_refresh: Mutex<Option<ActiveRefresh>>,
-    epg_cache: Mutex<HashMap<(String, String), EpgCacheEntry>>,
-    epg_inflight: Mutex<HashMap<(String, String), Arc<Notify>>>,
+    epg_cache: EpgCacheMap,
+    epg_inflight: EpgInflightMap,
 }
 
 impl CatalogService {
     pub fn cancel_active_refresh(&self) {
-        if let Ok(guard) = self.active_refresh.lock() {
-            if let Some(active) = guard.as_ref() {
-                active.cancelled.store(true, Ordering::SeqCst);
-            }
+        if let Ok(guard) = self.active_refresh.lock()
+            && let Some(active) = guard.as_ref()
+        {
+            active.cancelled.store(true, Ordering::SeqCst);
+            active.cancel_notify.notify_waiters();
         }
     }
 
@@ -53,11 +74,7 @@ impl CatalogService {
         }
     }
 
-    pub async fn refresh<F>(
-        &self,
-        state: &AppState,
-        mut on_progress: F,
-    ) -> Result<String, AppError>
+    pub async fn refresh<F>(&self, state: &AppState, mut on_progress: F) -> Result<String, AppError>
     where
         F: FnMut(CatalogProgressEvent),
     {
@@ -65,6 +82,7 @@ impl CatalogService {
         let refresh_id = uuid::Uuid::new_v4().to_string();
         let generation = uuid::Uuid::new_v4().to_string();
         let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_notify = Arc::new(Notify::new());
 
         {
             let mut guard = self
@@ -73,10 +91,12 @@ impl CatalogService {
                 .map_err(|_| AppError::storage("Refresh state unavailable.", true))?;
             if let Some(prev) = guard.take() {
                 prev.cancelled.store(true, Ordering::SeqCst);
+                prev.cancel_notify.notify_waiters();
             }
             *guard = Some(ActiveRefresh {
                 refresh_id: refresh_id.clone(),
                 cancelled: cancelled.clone(),
+                cancel_notify: cancel_notify.clone(),
             });
         }
 
@@ -95,6 +115,7 @@ impl CatalogService {
                 &refresh_id,
                 &generation,
                 &cancelled,
+                &cancel_notify,
                 &mut on_progress,
             )
             .await;
@@ -122,39 +143,32 @@ impl CatalogService {
                 let _ = state.with_store(|s| {
                     s.discard_generation(&provider_id, &generation, &refresh_id, status)
                 });
-                on_progress(CatalogProgressEvent {
-                    refresh_id: refresh_id.clone(),
-                    status: status.into(),
-                    stage: if was_cancelled {
-                        "Refresh cancelled".into()
-                    } else {
-                        "Refresh failed".into()
-                    },
-                    completed_categories: 0,
-                    total_categories: 0,
-                    live_count: 0,
-                    movie_count: 0,
-                    series_count: 0,
-                    error: if was_cancelled {
-                        None
-                    } else {
-                        Some(err.clone())
-                    },
-                });
+                if !was_cancelled {
+                    on_progress(CatalogProgressEvent {
+                        refresh_id: refresh_id.clone(),
+                        status: status.into(),
+                        stage: "Refresh failed".into(),
+                        completed_categories: 0,
+                        total_categories: 0,
+                        live_count: 0,
+                        movie_count: 0,
+                        series_count: 0,
+                        error: Some(err.clone()),
+                    });
+                }
                 Err(err)
             }
         }
     }
 
     fn finish_refresh_slot(&self, refresh_id: &str, state: &AppState) {
-        if let Ok(mut guard) = self.active_refresh.lock() {
-            if guard
+        if let Ok(mut guard) = self.active_refresh.lock()
+            && guard
                 .as_ref()
                 .is_some_and(|active| active.refresh_id == refresh_id)
-            {
-                *guard = None;
-                state.refreshing.store(false, Ordering::SeqCst);
-            }
+        {
+            *guard = None;
+            state.refreshing.store(false, Ordering::SeqCst);
         }
     }
 
@@ -167,6 +181,7 @@ impl CatalogService {
         refresh_id: &str,
         generation: &str,
         cancelled: &Arc<AtomicBool>,
+        cancel_notify: &Arc<Notify>,
         on_progress: &mut F,
     ) -> Result<(i64, i64, i64, usize), AppError>
     where
@@ -196,11 +211,18 @@ impl CatalogService {
             error: None,
         });
 
-        let (live_cats, movie_cats, series_cats) = tokio::try_join!(
-            session.fetch_categories(MediaKind::Live),
-            session.fetch_categories(MediaKind::Movie),
-            session.fetch_categories(MediaKind::Series),
-        )?;
+        let (live_cats, movie_cats, series_cats) = tokio::select! {
+            _ = cancel_notify.notified() => {
+                return Err(AppError::provider("Refresh was cancelled.", true));
+            }
+            res = async {
+                tokio::try_join!(
+                    session.fetch_categories(MediaKind::Live),
+                    session.fetch_categories(MediaKind::Movie),
+                    session.fetch_categories(MediaKind::Series),
+                )
+            } => res?,
+        };
         check_continue()?;
 
         state.with_store(|s| {
@@ -209,48 +231,63 @@ impl CatalogService {
             s.stage_categories(provider_id, generation, MediaKind::Series, &series_cats)
         })?;
 
-        let mut tasks: Vec<(MediaKind, String)> = Vec::with_capacity(
-            live_cats.len() + movie_cats.len() + series_cats.len(),
-        );
+        let mut pending: VecDeque<(MediaKind, String)> =
+            VecDeque::with_capacity(live_cats.len() + movie_cats.len() + series_cats.len());
         for c in &live_cats {
-            tasks.push((MediaKind::Live, c.id.clone()));
+            pending.push_back((MediaKind::Live, c.id.clone()));
         }
         for c in &movie_cats {
-            tasks.push((MediaKind::Movie, c.id.clone()));
+            pending.push_back((MediaKind::Movie, c.id.clone()));
         }
         for c in &series_cats {
-            tasks.push((MediaKind::Series, c.id.clone()));
+            pending.push_back((MediaKind::Series, c.id.clone()));
         }
 
-        let total_categories = tasks.len();
+        let total_categories = pending.len();
         let mut completed_categories = 0usize;
         let mut live_count = 0i64;
         let mut movie_count = 0i64;
         let mut series_count = 0i64;
 
-        let semaphore = Arc::new(Semaphore::new(MAX_IN_FLIGHT_CATEGORIES));
+        // Interleave spawning up to MAX_IN_FLIGHT_CATEGORIES and draining results so
+        // items stage into SQLite incrementally and cancellation aborts immediately.
         let mut join_set = tokio::task::JoinSet::new();
 
-        for (kind, cat_id) in tasks {
-            check_continue()?;
-            let permit = semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| AppError::provider("Refresh interrupted.", true))?;
-            let session_clone = session.clone();
-            let cancel_clone = cancelled.clone();
-            join_set.spawn(async move {
-                let _permit = permit;
-                if cancel_clone.load(Ordering::SeqCst) {
+        loop {
+            while join_set.len() < MAX_IN_FLIGHT_CATEGORIES {
+                let Some((kind, cat_id)) = pending.pop_front() else {
+                    break;
+                };
+                if let Err(err) = check_continue() {
+                    join_set.abort_all();
+                    return Err(err);
+                }
+                let session_clone = session.clone();
+                let cancel_clone = cancelled.clone();
+                join_set.spawn(async move {
+                    if cancel_clone.load(Ordering::SeqCst) {
+                        return Err(AppError::provider("Refresh was cancelled.", true));
+                    }
+                    let items = session_clone.fetch_category_items(kind, &cat_id).await?;
+                    Ok((kind, items))
+                });
+            }
+
+            if join_set.is_empty() {
+                break;
+            }
+
+            let joined = tokio::select! {
+                _ = cancel_notify.notified() => {
+                    join_set.abort_all();
                     return Err(AppError::provider("Refresh was cancelled.", true));
                 }
-                let items = session_clone.fetch_category_items(kind, &cat_id).await?;
-                Ok((kind, items))
-            });
-        }
+                next = join_set.join_next() => next,
+            };
 
-        while let Some(joined) = join_set.join_next().await {
+            let Some(joined) = joined else {
+                break;
+            };
             if let Err(err) = check_continue() {
                 join_set.abort_all();
                 return Err(err);
@@ -318,21 +355,24 @@ impl CatalogService {
             .as_deref()
             .and_then(|raw| serde_json::from_str(raw).ok());
 
-        if media_ref.kind != MediaKind::Live {
-            if let Some(session) = state.active_session()? {
-                let fetched = match media_ref.kind {
-                    MediaKind::Movie => session.fetch_movie_details(&media_ref.id).await.ok(),
-                    MediaKind::Series => session.fetch_series_details(&media_ref.id).await.ok(),
-                    MediaKind::Live => None,
-                };
-                if let Some(fresh) = fetched {
-                    if let Ok(json) = serde_json::to_string(&fresh) {
-                        let _ = state.with_store(|s| {
-                            s.save_item_details(&provider_id, media_ref.kind, &media_ref.id, &json)
-                        });
-                    }
-                    payload = Some(fresh);
+        // Only fetch from the provider if the active session belongs to the same provider_id.
+        if media_ref.kind != MediaKind::Live
+            && let Some(session) = state.active_session_for_provider(&provider_id)?
+        {
+            let fetched = match media_ref.kind {
+                MediaKind::Movie => session.fetch_movie_details(&media_ref.id).await.ok(),
+                MediaKind::Series => session.fetch_series_details(&media_ref.id).await.ok(),
+                MediaKind::Live => None,
+            };
+            if let Some(fresh) = fetched {
+                if state.active_session_for_provider(&provider_id)?.is_some()
+                    && let Ok(json) = serde_json::to_string(&fresh)
+                {
+                    let _ = state.with_store(|s| {
+                        s.save_item_details(&provider_id, media_ref.kind, &media_ref.id, &json)
+                    });
                 }
+                payload = Some(fresh);
             }
         }
 
@@ -350,12 +390,8 @@ impl CatalogService {
                 media_ref.kind.as_str(),
                 &media_ref.id,
             )?;
-            let history = s.item_history_entries(
-                &provider_id,
-                &profile_id,
-                media_ref.kind,
-                &media_ref.id,
-            )?;
+            let history =
+                s.item_history_entries(&provider_id, &profile_id, media_ref.kind, &media_ref.id)?;
             Ok((related, in_my_list, history))
         })?;
 
@@ -369,26 +405,34 @@ impl CatalogService {
         let episode_history: HashMap<&str, (i64, i64, bool)> = history_entries
             .iter()
             .filter(|h| !h.episode_id.is_empty())
-            .map(|h| (h.episode_id.as_str(), (h.position_ms, h.duration_ms, h.completed)))
+            .map(|h| {
+                (
+                    h.episode_id.as_str(),
+                    (h.position_ms, h.duration_ms, h.completed),
+                )
+            })
             .collect();
 
-        let seasons = payload.as_ref().and_then(|p| p.seasons.clone()).map(|mut list| {
-            for season in &mut list {
-                for ep in &mut season.episodes {
-                    if let Some(&(pos, dur, completed)) = episode_history.get(ep.id.as_str()) {
-                        ep.position_ms = Some(pos);
-                        if dur > 0 {
-                            ep.progress = Some(if completed {
-                                1.0
-                            } else {
-                                (pos as f64 / dur as f64).clamp(0.0, 1.0)
-                            });
+        let seasons = payload
+            .as_ref()
+            .and_then(|p| p.seasons.clone())
+            .map(|mut list| {
+                for season in &mut list {
+                    for ep in &mut season.episodes {
+                        if let Some(&(pos, dur, completed)) = episode_history.get(ep.id.as_str()) {
+                            ep.position_ms = Some(pos);
+                            if dur > 0 {
+                                ep.progress = Some(if completed {
+                                    1.0
+                                } else {
+                                    (pos as f64 / dur as f64).clamp(0.0, 1.0)
+                                });
+                            }
                         }
                     }
                 }
-            }
-            list
-        });
+                list
+            });
 
         Ok(MediaDetails {
             media_ref: item.media_ref,
@@ -431,7 +475,10 @@ impl CatalogService {
                 "EPG queries accept at most 50 channels at once.",
             ));
         }
-        if to_ms <= from_ms || (to_ms - from_ms) > EPG_MAX_WINDOW_MS {
+        if to_ms
+            .checked_sub(from_ms)
+            .is_none_or(|span| span <= 0 || span > EPG_MAX_WINDOW_MS)
+        {
             return Err(AppError::validation(
                 "EPG window must be positive and at most 24 hours.",
             ));
@@ -439,7 +486,7 @@ impl CatalogService {
         let provider_id = state
             .with_store(|s| s.active_provider_id())?
             .ok_or_else(|| AppError::unauthenticated("No active provider configured."))?;
-        let session = state.active_session()?;
+        let session = state.active_session_for_provider(&provider_id)?;
 
         let mut unique_ids = Vec::new();
         let mut seen = HashSet::new();
@@ -460,11 +507,14 @@ impl CatalogService {
                 .lock()
                 .map_err(|_| AppError::storage("EPG cache unavailable.", true))?;
             for id in &unique_ids {
-                if let Some(entry) = cache.get(&(provider_id.clone(), id.clone())) {
-                    if now.saturating_sub(entry.fetched_at_ms) <= EPG_CACHE_TTL_MS {
-                        result_map.insert(id.clone(), filter_epg_window(&entry.programs, from_ms, to_ms));
-                        continue;
-                    }
+                if let Some(entry) = cache.get(&(provider_id.clone(), id.clone()))
+                    && now.saturating_sub(entry.fetched_at_ms) <= EPG_CACHE_TTL_MS
+                {
+                    result_map.insert(
+                        id.clone(),
+                        filter_epg_window(&entry.programs, from_ms, to_ms),
+                    );
+                    continue;
                 }
                 to_fetch.push(id.clone());
             }
@@ -472,58 +522,71 @@ impl CatalogService {
 
         if let Some(session) = session {
             let semaphore = Arc::new(Semaphore::new(MAX_IN_FLIGHT_CATEGORIES));
-            let mut futures = Vec::new();
+            let mut join_set = tokio::task::JoinSet::new();
+
             for ch_id in to_fetch {
                 let key = (provider_id.clone(), ch_id.clone());
-                let wait_notify = {
-                    let mut inflight = self
-                        .epg_inflight
+                let cache_ref = self.epg_cache.clone();
+                let inflight_ref = self.epg_inflight.clone();
+
+                let existing_rx = {
+                    let mut inflight = inflight_ref
                         .lock()
                         .map_err(|_| AppError::storage("EPG state unavailable.", true))?;
-                    if let Some(existing) = inflight.get(&key) {
-                        Some((existing.clone(), false))
+                    if let Some(rx) = inflight.get(&key) {
+                        Some(rx.clone())
                     } else {
-                        let notify = Arc::new(Notify::new());
-                        inflight.insert(key.clone(), notify.clone());
-                        Some((notify, true))
+                        let (tx, rx) = watch::channel(false);
+                        inflight.insert(key.clone(), rx);
+                        let guard = EpgInflightGuard {
+                            inflight: inflight_ref.clone(),
+                            key: key.clone(),
+                            tx,
+                        };
+                        let session_c = session.clone();
+                        let sem_c = semaphore.clone();
+                        let leader_key = key.clone();
+                        let leader_cache = cache_ref.clone();
+                        join_set.spawn(async move {
+                            let _guard = guard;
+                            let fetched = match sem_c.acquire_owned().await {
+                                Ok(_permit) => session_c
+                                    .fetch_short_epg(&leader_key.1, 24)
+                                    .await
+                                    .unwrap_or_default(),
+                                Err(_) => Vec::new(),
+                            };
+                            if let Ok(mut cache) = leader_cache.lock() {
+                                cache.insert(
+                                    leader_key.clone(),
+                                    EpgCacheEntry {
+                                        fetched_at_ms: now_ms(),
+                                        programs: fetched.clone(),
+                                    },
+                                );
+                            }
+                            (leader_key.1, filter_epg_window(&fetched, from_ms, to_ms))
+                        });
+                        None
                     }
                 };
-                if let Some((notify, is_leader)) = wait_notify {
-                    let session_c = session.clone();
-                    let sem_c = semaphore.clone();
-                    futures.push((key, notify, is_leader, session_c, sem_c));
+
+                if let Some(mut rx) = existing_rx {
+                    join_set.spawn(async move {
+                        let _ = rx.wait_for(|done| *done).await;
+                        let programs = cache_ref
+                            .lock()
+                            .ok()
+                            .and_then(|c| c.get(&key).map(|e| e.programs.clone()))
+                            .unwrap_or_default();
+                        (key.1, filter_epg_window(&programs, from_ms, to_ms))
+                    });
                 }
             }
 
-            for (key, notify, is_leader, session_c, sem_c) in futures {
-                if is_leader {
-                    let fetched = match sem_c.acquire_owned().await {
-                        Ok(_permit) => session_c.fetch_short_epg(&key.1, 24).await.unwrap_or_default(),
-                        Err(_) => Vec::new(),
-                    };
-                    if let Ok(mut cache) = self.epg_cache.lock() {
-                        cache.insert(
-                            key.clone(),
-                            EpgCacheEntry {
-                                fetched_at_ms: now_ms(),
-                                programs: fetched.clone(),
-                            },
-                        );
-                    }
-                    if let Ok(mut inflight) = self.epg_inflight.lock() {
-                        inflight.remove(&key);
-                    }
-                    notify.notify_waiters();
-                    result_map.insert(key.1, filter_epg_window(&fetched, from_ms, to_ms));
-                } else {
-                    notify.notified().await;
-                    let programs = self
-                        .epg_cache
-                        .lock()
-                        .ok()
-                        .and_then(|c| c.get(&key).map(|e| e.programs.clone()))
-                        .unwrap_or_default();
-                    result_map.insert(key.1, filter_epg_window(&programs, from_ms, to_ms));
+            while let Some(joined) = join_set.join_next().await {
+                if let Ok((ch_id, programs)) = joined {
+                    result_map.insert(ch_id, programs);
                 }
             }
         } else {
@@ -537,16 +600,18 @@ impl CatalogService {
         })
     }
 
-    /// Resolves a playable stream URL strictly inside Rust; credentials never cross IPC.
+    /// Resolves a playable stream URL strictly inside Rust using the caller-provided
+    /// authenticated `(session, provider_id)` snapshot; credentials never cross IPC.
     pub async fn resolve_stream(
         &self,
         state: &AppState,
+        session: &ProviderSession,
+        provider_id: &str,
         media_ref: &MediaRef,
         episode_id: Option<&str>,
-    ) -> Result<(ResolvedStream, Vec<crate::models::EpisodeDetails>), AppError> {
-        let (session, provider_id) = state.require_session()?;
+    ) -> Result<(ResolvedStream, Vec<EpisodeDetails>), AppError> {
         let (item, cached_json) = state
-            .with_store(|s| s.get_item(&provider_id, media_ref.kind, &media_ref.id))?
+            .with_store(|s| s.get_item(provider_id, media_ref.kind, &media_ref.id))?
             .ok_or_else(|| AppError::validation("Selected title was not found in your library."))?;
 
         match media_ref.kind {
@@ -587,14 +652,21 @@ impl CatalogService {
                     .unwrap_or(true);
                 if needs_fetch {
                     let fresh = session.fetch_series_details(&media_ref.id).await?;
-                    if let Ok(json) = serde_json::to_string(&fresh) {
+                    if state.active_session_for_provider(provider_id)?.is_some()
+                        && let Ok(json) = serde_json::to_string(&fresh)
+                    {
                         let _ = state.with_store(|s| {
-                            s.save_item_details(&provider_id, MediaKind::Series, &media_ref.id, &json)
+                            s.save_item_details(
+                                provider_id,
+                                MediaKind::Series,
+                                &media_ref.id,
+                                &json,
+                            )
                         });
                     }
                     payload = Some(fresh);
                 }
-                let episodes: Vec<crate::models::EpisodeDetails> = payload
+                let episodes: Vec<EpisodeDetails> = payload
                     .and_then(|p| p.seasons)
                     .unwrap_or_default()
                     .into_iter()
@@ -611,7 +683,10 @@ impl CatalogService {
                         })?
                 } else {
                     episodes.first().cloned().ok_or_else(|| {
-                        AppError::provider("No playable episodes were returned for this series.", false)
+                        AppError::provider(
+                            "No playable episodes were returned for this series.",
+                            false,
+                        )
                     })?
                 };
 
@@ -709,7 +784,10 @@ mod tests {
         let phase_c = phase.clone();
         let (base, stop, server) = spawn_fixture_server(move |path| {
             if !path.contains("action=") {
-                return ("200 OK", r#"{"user_info":{"auth":1,"status":"Active"}}"#.into());
+                return (
+                    "200 OK",
+                    r#"{"user_info":{"auth":1,"status":"Active"}}"#.into(),
+                );
             }
             let current = phase_c.load(Ordering::SeqCst);
             if path.contains("action=get_live_categories") {
@@ -720,7 +798,10 @@ mod tests {
             }
             if path.contains("action=get_vod_categories") {
                 if current == 0 {
-                    return ("200 OK", r#"[{"category_id":"1","category_name":"Sci-Fi"}]"#.into());
+                    return (
+                        "200 OK",
+                        r#"[{"category_id":"1","category_name":"Sci-Fi"}]"#.into(),
+                    );
                 } else {
                     return (
                         "200 OK",
@@ -747,10 +828,8 @@ mod tests {
             ("200 OK", "[]".into())
         });
 
-        let db_path = std::env::temp_dir().join(format!(
-            "marquee-cat-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("marquee-cat-{}.sqlite", uuid::Uuid::new_v4()));
         let state = AppState::new(db_path.clone(), Box::new(MemSecrets::default()));
         let catalog = CatalogService::default();
 
@@ -760,9 +839,22 @@ mod tests {
             catalog.refresh(&state, |ev| events.push(ev)).await.unwrap();
             assert!(events.last().unwrap().status == "completed");
 
-            let provider_id = state.with_store(|s| s.active_provider_id()).unwrap().unwrap();
+            let provider_id = state
+                .with_store(|s| s.active_provider_id())
+                .unwrap()
+                .unwrap();
             let page_a = state
-                .with_store(|s| s.query_catalog(&provider_id, Some(MediaKind::Movie), None, None, 0, 20, None))
+                .with_store(|s| {
+                    s.query_catalog(
+                        &provider_id,
+                        Some(MediaKind::Movie),
+                        None,
+                        None,
+                        0,
+                        20,
+                        None,
+                    )
+                })
                 .unwrap();
             assert_eq!(page_a.total, 1);
             assert_eq!(page_a.items[0].name, "Arrival (2016)");
@@ -774,7 +866,17 @@ mod tests {
 
             // Catalogue A must remain completely intact!
             let page_after = state
-                .with_store(|s| s.query_catalog(&provider_id, Some(MediaKind::Movie), None, None, 0, 20, None))
+                .with_store(|s| {
+                    s.query_catalog(
+                        &provider_id,
+                        Some(MediaKind::Movie),
+                        None,
+                        None,
+                        0,
+                        20,
+                        None,
+                    )
+                })
                 .unwrap();
             assert_eq!(page_after.total, 1);
             assert_eq!(page_after.items[0].name, "Arrival (2016)");
@@ -787,12 +889,15 @@ mod tests {
     }
 
     #[test]
-    fn valid_empty_catalogue_succeeds_and_epg_enforces_bounds_and_caches() {
+    fn valid_empty_catalogue_succeeds_and_epg_enforces_bounds_and_deduplicates_concurrently() {
         let epg_calls = Arc::new(AtomicUsize::new(0));
         let epg_calls_c = epg_calls.clone();
         let (base, stop, server) = spawn_fixture_server(move |path| {
             if !path.contains("action=") {
-                return ("200 OK", r#"{"user_info":{"auth":1,"status":"Active"}}"#.into());
+                return (
+                    "200 OK",
+                    r#"{"user_info":{"auth":1,"status":"Active"}}"#.into(),
+                );
             }
             if path.contains("action=get_short_epg") {
                 epg_calls_c.fetch_add(1, Ordering::SeqCst);
@@ -804,10 +909,8 @@ mod tests {
             ("200 OK", "[]".into())
         });
 
-        let db_path = std::env::temp_dir().join(format!(
-            "marquee-empty-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let db_path =
+            std::env::temp_dir().join(format!("marquee-empty-{}.sqlite", uuid::Uuid::new_v4()));
         let state = AppState::new(db_path.clone(), Box::new(MemSecrets::default()));
         let catalog = CatalogService::default();
 
@@ -818,23 +921,49 @@ mod tests {
             assert!(boot.cache_status.has_catalogue);
             assert_eq!(boot.cache_status.movie_count, 0);
 
+            // Overflowing bounds rejected safely
+            assert_eq!(
+                catalog
+                    .epg_query(&state, &["1".into()], i64::MIN, i64::MAX)
+                    .await
+                    .unwrap_err()
+                    .code,
+                "validation"
+            );
             // More than 50 channels rejected
             let too_many: Vec<String> = (0..51).map(|i| i.to_string()).collect();
             assert_eq!(
-                catalog.epg_query(&state, &too_many, 1_700_000_000_000, 1_700_010_000_000).await.unwrap_err().code,
+                catalog
+                    .epg_query(&state, &too_many, 1_700_000_000_000, 1_700_010_000_000)
+                    .await
+                    .unwrap_err()
+                    .code,
                 "validation"
             );
             // Window > 24h rejected
             assert_eq!(
-                catalog.epg_query(&state, &["1".into()], 1_700_000_000_000, 1_700_000_000_000 + EPG_MAX_WINDOW_MS + 1).await.unwrap_err().code,
+                catalog
+                    .epg_query(
+                        &state,
+                        &["1".into()],
+                        1_700_000_000_000,
+                        1_700_000_000_000 + EPG_MAX_WINDOW_MS + 1
+                    )
+                    .await
+                    .unwrap_err()
+                    .code,
                 "validation"
             );
-            // Valid query hits provider once, second query uses cache
-            let res1 = catalog.epg_query(&state, &["1".into()], 1_699_999_000_000, 1_700_010_000_000).await.unwrap();
-            assert_eq!(res1.channels["1"].len(), 1);
-            let res2 = catalog.epg_query(&state, &["1".into()], 1_699_999_000_000, 1_700_010_000_000).await.unwrap();
-            assert_eq!(res2.channels["1"].len(), 1);
-            assert_eq!(epg_calls.load(Ordering::SeqCst), 1);
+            // Concurrent overlapping queries deduplicate cleanly without deadlocking
+            let ch_a = vec!["1".to_string(), "2".to_string()];
+            let ch_b = vec!["2".to_string(), "1".to_string()];
+            let (r1, r2) = tokio::join!(
+                catalog.epg_query(&state, &ch_a, 1_699_999_000_000, 1_700_010_000_000),
+                catalog.epg_query(&state, &ch_b, 1_699_999_000_000, 1_700_010_000_000)
+            );
+            assert_eq!(r1.unwrap().channels["1"].len(), 1);
+            assert_eq!(r2.unwrap().channels["2"].len(), 1);
+            assert_eq!(epg_calls.load(Ordering::SeqCst), 2);
         });
 
         stop.store(true, Ordering::Relaxed);

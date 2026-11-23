@@ -45,6 +45,17 @@ pub fn set_visible(surface: u64, visible: bool) {
 }
 
 #[cfg(windows)]
+pub fn destroy(surface: u64) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    if surface == 0 {
+        return;
+    }
+    unsafe {
+        DestroyWindow(surface as _);
+    }
+}
+
+#[cfg(windows)]
 pub fn resize(window: &tauri::WebviewWindow, surface: u64) {
     use windows_sys::Win32::UI::WindowsAndMessaging::*;
     if surface == 0 {
@@ -78,6 +89,9 @@ pub fn create(_: &tauri::WebviewWindow) -> Result<u64, AppError> {
 
 #[cfg(not(windows))]
 pub fn set_visible(_: u64, _: bool) {}
+
+#[cfg(not(windows))]
+pub fn destroy(_: u64) {}
 
 #[cfg(not(windows))]
 pub fn resize(_: &tauri::WebviewWindow, _: u64) {}

@@ -45,6 +45,10 @@ export default function Home({
   const req = useLatestRequest();
 
   useEffect(() => {
+    setData(null);
+  }, [profileId]);
+
+  useEffect(() => {
     if (!api.homeSections) {
       setLoading(false);
       return;

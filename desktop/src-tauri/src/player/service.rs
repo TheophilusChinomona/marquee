@@ -21,7 +21,9 @@ use tauri::{AppHandle, Emitter, Manager};
 #[derive(Default)]
 pub struct PlayerService {
     pub controller: Mutex<SessionController>,
+    init_lock: Mutex<()>,
     pub surface_handle: AtomicU64,
+    resize_registered: AtomicBool,
     pub development_smoke: AtomicBool,
     pub poller_running: AtomicBool,
 }
@@ -39,7 +41,27 @@ impl PlayerService {
         Ok(ctrl.snapshot())
     }
 
+    fn sync_surface_visibility(&self, app: &AppHandle, show: bool) {
+        let handle = self.surface_handle.load(Ordering::Relaxed);
+        if handle != 0
+            && let Some(window) = app.get_webview_window("main")
+        {
+            let w = window.clone();
+            let _ = window.run_on_main_thread(move || {
+                if show {
+                    surface::resize(&w, handle);
+                }
+                surface::set_visible(handle, show);
+            });
+        }
+    }
+
     fn ensure_surface_and_engine(&self, app: &AppHandle) -> Result<(), AppError> {
+        let _init_guard = self
+            .init_lock
+            .lock()
+            .map_err(|_| AppError::player("Player initialization unavailable."))?;
+
         let needs_engine = {
             let ctrl = self
                 .controller
@@ -48,16 +70,6 @@ impl PlayerService {
             !ctrl.has_engine()
         };
         if !needs_engine {
-            let handle = self.surface_handle.load(Ordering::Relaxed);
-            if handle != 0 {
-                if let Some(window) = app.get_webview_window("main") {
-                    let w = window.clone();
-                    let _ = window.run_on_main_thread(move || {
-                        surface::resize(&w, handle);
-                        surface::set_visible(handle, true);
-                    });
-                }
-            }
             return Ok(());
         }
 
@@ -65,54 +77,69 @@ impl PlayerService {
             .get_webview_window("main")
             .ok_or_else(|| AppError::player("Main window is unavailable."))?;
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let w_create = window.clone();
-        window
-            .run_on_main_thread(move || {
-                let res = surface::create(&w_create);
-                if let Ok(h) = res {
-                    surface::resize(&w_create, h);
-                    surface::set_visible(h, true);
-                }
-                let _ = tx.send(res);
-            })
-            .map_err(|_| AppError::player("Unable to access window UI thread."))?;
-
-        let handle = rx
-            .recv()
-            .map_err(|_| AppError::player("Unable to initialize video surface."))??;
-        self.surface_handle.store(handle, Ordering::SeqCst);
-
-        let resize_window = window.clone();
-        window.on_window_event(move |event| {
-            if matches!(
-                event,
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
-            ) {
-                surface::resize(&resize_window, handle);
-            }
-        });
+        let existing_handle = self.surface_handle.load(Ordering::Relaxed);
+        let (handle, created_here) = if existing_handle != 0 {
+            (existing_handle, false)
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let w_create = window.clone();
+            window
+                .run_on_main_thread(move || {
+                    let res = surface::create(&w_create);
+                    if let Ok(h) = res {
+                        surface::resize(&w_create, h);
+                        surface::set_visible(h, false);
+                    }
+                    let _ = tx.send(res);
+                })
+                .map_err(|_| AppError::player("Unable to access window UI thread."))?;
+            let h = rx
+                .recv()
+                .map_err(|_| AppError::player("Unable to initialize video surface."))??;
+            (h, true)
+        };
 
         let resource_dir = app.path().resource_dir().ok();
         let runtime_path = resolve_runtime_path(resource_dir.as_deref());
-        let engine = NativePlayer::open(&runtime_path, handle)?;
+        let engine = match NativePlayer::open(&runtime_path, handle) {
+            Ok(eng) => eng,
+            Err(err) => {
+                if created_here {
+                    let _ = window.run_on_main_thread(move || {
+                        surface::destroy(handle);
+                    });
+                }
+                return Err(err);
+            }
+        };
+
+        self.surface_handle.store(handle, Ordering::SeqCst);
+
+        if !self.resize_registered.swap(true, Ordering::SeqCst) {
+            let resize_window = window.clone();
+            let app_resize = app.clone();
+            window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }
+                ) {
+                    let h = app_resize
+                        .state::<PlayerService>()
+                        .surface_handle
+                        .load(Ordering::Relaxed);
+                    if h != 0 {
+                        surface::resize(&resize_window, h);
+                    }
+                }
+            });
+        }
+
         let mut ctrl = self
             .controller
             .lock()
             .map_err(|_| AppError::player("Player state unavailable."))?;
         ctrl.set_engine(Box::new(engine));
         Ok(())
-    }
-
-    fn hide_surface(&self, app: &AppHandle) {
-        let handle = self.surface_handle.load(Ordering::Relaxed);
-        if handle != 0 {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.run_on_main_thread(move || {
-                    surface::set_visible(handle, false);
-                });
-            }
-        }
     }
 
     fn ensure_poller(&self, app: &AppHandle) {
@@ -127,7 +154,7 @@ impl PlayerService {
                 let player = app_handle.state::<PlayerService>();
                 let app_state = app_handle.state::<AppState>();
 
-                let snapshot_opt = {
+                let poll_res = {
                     let Ok(mut ctrl) = player.controller.lock() else {
                         break;
                     };
@@ -135,16 +162,15 @@ impl PlayerService {
                         player.poller_running.store(false, Ordering::SeqCst);
                         break;
                     }
-                    app_state
+                    let snap = app_state
                         .with_store(|store| Ok(ctrl.tick(store, now_ms())))
                         .ok()
-                        .flatten()
+                        .flatten();
+                    snap.map(|s| (s, ctrl.should_show_surface()))
                 };
 
-                if let Some(snap) = snapshot_opt {
-                    if snap.status == "stopped" {
-                        player.hide_surface(&app_handle);
-                    }
+                if let Some((snap, show_surface)) = poll_res {
+                    player.sync_surface_visibility(&app_handle, show_surface);
                     let _ = app_handle.emit(
                         "player-state",
                         PlayerStateEvent {
@@ -166,9 +192,28 @@ impl PlayerService {
         episode_id: Option<&str>,
         resume: bool,
     ) -> Result<PlayerSnapshot, AppError> {
-        let (provider_id, profile_id) = state.active_scope()?;
-        let (resolved, episodes) = catalog.resolve_stream(state, media_ref, episode_id).await?;
-        let (session, _) = state.require_session()?;
+        let (session, provider_id) = state.require_session()?;
+        let (active_prov, profile_id) = state.active_scope()?;
+        if active_prov != provider_id {
+            return Err(AppError::unauthenticated(
+                "Active provider changed. Please retry.",
+            ));
+        }
+
+        let (resolved, episodes) = catalog
+            .resolve_stream(state, &session, &provider_id, media_ref, episode_id)
+            .await?;
+
+        // Re-verify active provider and profile after async network resolution.
+        let (post_prov, post_profile) = state.active_scope()?;
+        if post_prov != provider_id
+            || post_profile != profile_id
+            || state.active_session_for_provider(&provider_id)?.is_none()
+        {
+            return Err(AppError::unauthenticated(
+                "Account or profile changed before playback could start.",
+            ));
+        }
 
         let queue: Vec<QueueEpisode> = episodes
             .into_iter()
@@ -191,8 +236,12 @@ impl PlayerService {
             let settings = store.settings()?;
             let mut pos_ms = 0u64;
             if resume && media_ref.kind != MediaKind::Live {
-                let entries =
-                    store.item_history_entries(&provider_id, &profile_id, media_ref.kind, &media_ref.id)?;
+                let entries = store.item_history_entries(
+                    &provider_id,
+                    &profile_id,
+                    media_ref.kind,
+                    &media_ref.id,
+                )?;
                 let target_ep = resolved.episode_id.as_deref().unwrap_or("");
                 if let Some(entry) = entries
                     .iter()
@@ -206,12 +255,12 @@ impl PlayerService {
 
         self.ensure_surface_and_engine(app)?;
 
-        let snap = {
+        let (snap, show_surface) = {
             let mut ctrl = self
                 .controller
                 .lock()
                 .map_err(|_| AppError::player("Player state unavailable."))?;
-            state.with_store(|store| {
+            let snap = state.with_store(|store| {
                 ctrl.start(
                     StartSessionRequest {
                         provider_id: provider_id.clone(),
@@ -223,14 +272,17 @@ impl PlayerService {
                         start_ms,
                         queue,
                         autoplay_next: settings.autoplay_next,
+                        preferred_audio: settings.preferred_audio,
                         subtitles_default: settings.subtitles_default,
                     },
                     store,
                     now_ms(),
                 )
-            })?
+            })?;
+            (snap, ctrl.should_show_surface())
         };
 
+        self.sync_surface_visibility(app, show_surface);
         self.ensure_poller(app);
         let _ = app.emit(
             "player-state",
@@ -248,17 +300,15 @@ impl PlayerService {
         state: &AppState,
         command: PlayerControlCommand,
     ) -> Result<PlayerSnapshot, AppError> {
-        let is_stop = matches!(command, PlayerControlCommand::Stop);
-        let snap = {
+        let (snap, show_surface) = {
             let mut ctrl = self
                 .controller
                 .lock()
                 .map_err(|_| AppError::player("Player state unavailable."))?;
-            state.with_store(|store| ctrl.control(command, store, now_ms()))?
+            let snap = state.with_store(|store| ctrl.control(command, store, now_ms()))?;
+            (snap, ctrl.should_show_surface())
         };
-        if is_stop {
-            self.hide_surface(app);
-        }
+        self.sync_surface_visibility(app, show_surface);
         let _ = app.emit(
             "player-state",
             PlayerStateEvent {
@@ -276,7 +326,7 @@ impl PlayerService {
                 Ok(())
             });
         }
-        self.hide_surface(app);
+        self.sync_surface_visibility(app, false);
     }
 
     pub fn shutdown(&self, state: &AppState) {
@@ -285,6 +335,10 @@ impl PlayerService {
                 ctrl.shutdown(store);
                 Ok(())
             });
+        }
+        let handle = self.surface_handle.swap(0, Ordering::SeqCst);
+        if handle != 0 {
+            surface::destroy(handle);
         }
     }
 }

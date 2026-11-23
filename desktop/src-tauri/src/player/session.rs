@@ -5,6 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fmt;
 
 pub const PROGRESS_SAVE_INTERVAL_MS: i64 = 10_000;
 
@@ -51,10 +52,19 @@ pub struct QueueItem {
     pub title: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct QueueEpisode {
     pub item: QueueItem,
     pub url: String,
+}
+
+impl fmt::Debug for QueueEpisode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QueueEpisode")
+            .field("item", &self.item)
+            .field("url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,11 +134,13 @@ pub enum PlayerControlCommand {
     PreviousEpisode,
     NextEpisode,
     SelectEpisode(String),
+    OverlayVisible(bool),
     Stop,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct EnginePoll {
+    pub file_loaded: bool,
     pub paused: bool,
     pub buffering: bool,
     pub idle_active: bool,
@@ -143,6 +155,26 @@ pub struct EnginePoll {
     pub end_event: Option<EndReason>,
 }
 
+impl Default for EnginePoll {
+    fn default() -> Self {
+        Self {
+            file_loaded: true,
+            paused: false,
+            buffering: false,
+            idle_active: false,
+            position_ms: 0,
+            duration_ms: 0,
+            seekable: false,
+            volume: 100.0,
+            muted: false,
+            tracks: vec![],
+            selected_audio_id: None,
+            selected_subtitle_id: None,
+            end_event: None,
+        }
+    }
+}
+
 pub trait MediaEngine: Send {
     fn load(&mut self, url: &str, start_ms: u64) -> Result<(), AppError>;
     fn set_pause(&mut self, paused: bool) -> Result<(), AppError>;
@@ -151,6 +183,7 @@ pub trait MediaEngine: Send {
     fn set_mute(&mut self, muted: bool) -> Result<(), AppError>;
     fn set_audio_track(&mut self, id: Option<i64>) -> Result<(), AppError>;
     fn set_subtitle_track(&mut self, id: Option<i64>) -> Result<(), AppError>;
+    fn apply_preferences(&mut self, preferred_audio: &str, subtitles_default: bool);
     fn stop(&mut self) -> Result<(), AppError>;
     fn poll_state(&mut self) -> EnginePoll;
     fn shutdown(&mut self);
@@ -251,11 +284,24 @@ impl MediaEngine for NativePlayer {
         }
     }
 
+    fn apply_preferences(&mut self, preferred_audio: &str, subtitles_default: bool) {
+        let alang = if preferred_audio.eq_ignore_ascii_case("english") {
+            "eng,en"
+        } else {
+            ""
+        };
+        let _ = self.command(&["set", "alang", alang]);
+        let _ = self.command(&["set", "sid", if subtitles_default { "auto" } else { "no" }]);
+    }
+
     fn stop(&mut self) -> Result<(), AppError> {
+        self.drain_events();
         self.command(&["stop"])
     }
 
     fn poll_state(&mut self) -> EnginePoll {
+        let end_event = self.poll_end_reason().map(EndReason::from_mpv);
+        let file_loaded = self.is_file_loaded();
         let num = |key: &str| {
             self.property(key)
                 .and_then(|v| v.parse::<f64>().ok())
@@ -268,6 +314,7 @@ impl MediaEngine for NativePlayer {
             .unwrap_or_else(|| (Vec::new(), None, None));
 
         EnginePoll {
+            file_loaded,
             paused: self.property("pause").as_deref() == Some("yes"),
             buffering: self.property("paused-for-cache").as_deref() == Some("yes"),
             idle_active: self.property("idle-active").as_deref() == Some("yes"),
@@ -279,7 +326,7 @@ impl MediaEngine for NativePlayer {
             tracks,
             selected_audio_id,
             selected_subtitle_id,
-            end_event: self.poll_end_reason().map(EndReason::from_mpv),
+            end_event,
         }
     }
 
@@ -298,6 +345,7 @@ pub struct StartSessionRequest {
     pub start_ms: u64,
     pub queue: Vec<QueueEpisode>,
     pub autoplay_next: bool,
+    pub preferred_audio: String,
     pub subtitles_default: bool,
 }
 
@@ -308,8 +356,11 @@ struct ActivePlayback {
     media: MediaItem,
     episode_id: Option<String>,
     episode_title: Option<String>,
+    current_url: String,
     queue: Vec<QueueEpisode>,
     autoplay_next: bool,
+    preferred_audio: String,
+    subtitles_default: bool,
     status: String,
     position_ms: i64,
     duration_ms: i64,
@@ -322,6 +373,7 @@ struct ActivePlayback {
     error: Option<AppError>,
     eof_handled: bool,
     suppress_next_end: bool,
+    overlay_open: bool,
     last_saved_at_ms: i64,
 }
 
@@ -349,20 +401,16 @@ impl ActivePlayback {
             error: self.error.clone(),
         }
     }
+
+    pub fn should_show_surface(&self) -> bool {
+        !self.overlay_open && matches!(self.status.as_str(), "playing" | "paused" | "buffering")
+    }
 }
 
+#[derive(Default)]
 pub struct SessionController {
     engine: Option<Box<dyn MediaEngine>>,
     active: Option<ActivePlayback>,
-}
-
-impl Default for SessionController {
-    fn default() -> Self {
-        Self {
-            engine: None,
-            active: None,
-        }
-    }
 }
 
 impl SessionController {
@@ -386,6 +434,12 @@ impl SessionController {
         self.active
             .as_ref()
             .is_some_and(|a| !matches!(a.status.as_str(), "stopped"))
+    }
+
+    pub fn should_show_surface(&self) -> bool {
+        self.active
+            .as_ref()
+            .is_some_and(ActivePlayback::should_show_surface)
     }
 
     pub fn snapshot(&self) -> PlayerSnapshot {
@@ -427,7 +481,6 @@ impl SessionController {
         store: &mut Store,
         now: i64,
     ) -> Result<PlayerSnapshot, AppError> {
-        // Save and cleanly end any prior session before loading the new item.
         if self.active.is_some() {
             self.persist_current(store, now, false);
         }
@@ -437,11 +490,9 @@ impl SessionController {
         })?;
 
         let replacing = self.active.is_some();
+        engine.apply_preferences(&req.preferred_audio, req.subtitles_default);
         engine.load(&req.url, req.start_ms)?;
         let _ = engine.set_pause(false);
-        if !req.subtitles_default {
-            let _ = engine.set_subtitle_track(None);
-        }
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let active = ActivePlayback {
@@ -451,8 +502,11 @@ impl SessionController {
             media: req.media,
             episode_id: req.episode_id,
             episode_title: req.episode_title,
+            current_url: req.url,
             queue: req.queue,
             autoplay_next: req.autoplay_next,
+            preferred_audio: req.preferred_audio,
+            subtitles_default: req.subtitles_default,
             status: "loading".into(),
             position_ms: req.start_ms as i64,
             duration_ms: 0,
@@ -465,6 +519,7 @@ impl SessionController {
             error: None,
             eof_handled: false,
             suppress_next_end: replacing,
+            overlay_open: false,
             last_saved_at_ms: now,
         };
         let snap = active.snapshot();
@@ -478,12 +533,16 @@ impl SessionController {
         store: &mut Store,
         now: i64,
     ) -> Result<PlayerSnapshot, AppError> {
-        match command {
-            PlayerControlCommand::Stop => {
-                self.stop_and_save(store, now);
-                return Ok(self.snapshot());
+        if let PlayerControlCommand::Stop = command {
+            self.stop_and_save(store, now);
+            return Ok(self.snapshot());
+        }
+
+        if let PlayerControlCommand::OverlayVisible(open) = command {
+            if let Some(a) = self.active.as_mut() {
+                a.overlay_open = open;
             }
-            _ => {}
+            return Ok(self.snapshot());
         }
 
         let Some(active) = self.active.as_ref() else {
@@ -493,6 +552,10 @@ impl SessionController {
         let seekable = active.seekable && !is_live;
         let current_pos = active.position_ms;
         let duration = active.duration_ms;
+        let was_ended = active.status == "ended";
+        let replay_url = active.current_url.clone();
+        let pref_audio = active.preferred_audio.clone();
+        let pref_subs = active.subtitles_default;
 
         match command {
             PlayerControlCommand::Pause => {
@@ -505,11 +568,28 @@ impl SessionController {
                 self.persist_current(store, now, false);
             }
             PlayerControlCommand::Resume => {
-                if let Some(engine) = self.engine.as_mut() {
-                    engine.set_pause(false)?;
-                }
-                if let Some(a) = self.active.as_mut() {
-                    a.status = "playing".into();
+                if was_ended {
+                    if let Some(engine) = self.engine.as_mut() {
+                        engine.apply_preferences(&pref_audio, pref_subs);
+                        engine.load(&replay_url, 0)?;
+                        let _ = engine.set_pause(false);
+                    }
+                    if let Some(a) = self.active.as_mut() {
+                        a.status = "loading".into();
+                        a.position_ms = 0;
+                        a.duration_ms = 0;
+                        a.eof_handled = false;
+                        a.suppress_next_end = true;
+                        a.error = None;
+                        a.last_saved_at_ms = now;
+                    }
+                } else {
+                    if let Some(engine) = self.engine.as_mut() {
+                        engine.set_pause(false)?;
+                    }
+                    if let Some(a) = self.active.as_mut() {
+                        a.status = "playing".into();
+                    }
                 }
             }
             PlayerControlCommand::SeekAbsoluteMs(target_ms) => {
@@ -589,7 +669,7 @@ impl SessionController {
             PlayerControlCommand::SelectEpisode(ep_id) => {
                 self.switch_to_episode_id(&ep_id, store, now)?;
             }
-            PlayerControlCommand::Stop => unreachable!(),
+            PlayerControlCommand::Stop | PlayerControlCommand::OverlayVisible(_) => unreachable!(),
             PlayerControlCommand::Volume(_) => {
                 return Err(AppError::validation("Invalid volume value."));
             }
@@ -609,10 +689,9 @@ impl SessionController {
                 .active
                 .as_ref()
                 .ok_or_else(|| AppError::player("No active playback session."))?;
-            let current_id = active
-                .episode_id
-                .as_deref()
-                .ok_or_else(|| AppError::validation("Episode navigation is only available for series."))?;
+            let current_id = active.episode_id.as_deref().ok_or_else(|| {
+                AppError::validation("Episode navigation is only available for series.")
+            })?;
             let idx = active
                 .queue
                 .iter()
@@ -620,7 +699,9 @@ impl SessionController {
                 .ok_or_else(|| AppError::validation("Current episode is not in the queue."))?;
             let next_idx = idx as isize + delta;
             if next_idx < 0 || (next_idx as usize) >= active.queue.len() {
-                return Err(AppError::validation("No further episode in that direction."));
+                return Err(AppError::validation(
+                    "No further episode in that direction.",
+                ));
             }
             active.queue[next_idx as usize].item.episode_id.clone()
         };
@@ -634,7 +715,7 @@ impl SessionController {
         now: i64,
     ) -> Result<(), AppError> {
         self.persist_current(store, now, false);
-        let (url, title) = {
+        let (url, title, pref_audio, pref_subs) = {
             let active = self
                 .active
                 .as_ref()
@@ -648,19 +729,26 @@ impl SessionController {
                 "S{} E{} · {}",
                 found.item.season, found.item.number, found.item.title
             );
-            (found.url.clone(), label)
+            (
+                found.url.clone(),
+                label,
+                active.preferred_audio.clone(),
+                active.subtitles_default,
+            )
         };
 
         let engine = self
             .engine
             .as_mut()
             .ok_or_else(|| AppError::player("Player runtime unavailable."))?;
+        engine.apply_preferences(&pref_audio, pref_subs);
         engine.load(&url, 0)?;
         let _ = engine.set_pause(false);
 
         if let Some(active) = self.active.as_mut() {
             active.episode_id = Some(episode_id.to_string());
             active.episode_title = Some(title);
+            active.current_url = url;
             active.status = "loading".into();
             active.position_ms = 0;
             active.duration_ms = 0;
@@ -672,8 +760,8 @@ impl SessionController {
         Ok(())
     }
 
-    /// Polls native engine state, persists progress every 10s, and handles natural EOF
-    /// episode auto-advance exactly once.
+    /// Polls native engine state, guards against stale pre-load position/EOF events,
+    /// persists progress every 10s, and handles natural EOF episode auto-advance exactly once.
     pub fn tick(&mut self, store: &mut Store, now: i64) -> Option<PlayerSnapshot> {
         if self.active.is_none() || self.engine.is_none() {
             return None;
@@ -687,6 +775,22 @@ impl SessionController {
         if let Some(active) = self.active.as_mut() {
             if active.status == "stopped" {
                 return None;
+            }
+
+            // While loading a newly requested/replaced file, ignore stale position/duration
+            // and stale non-error end events until the new file actually loads.
+            if active.status == "loading" && !poll.file_loaded {
+                if let Some(end_reason) = poll.end_event {
+                    if active.suppress_next_end {
+                        active.suppress_next_end = false;
+                    } else if matches!(end_reason, EndReason::Error) {
+                        active.status = "error".into();
+                        active.error = Some(AppError::player(
+                            "Playback failed or stream connection was lost. Try again.",
+                        ));
+                    }
+                }
+                return Some(active.snapshot());
             }
 
             if poll.duration_ms > 0 {
@@ -703,34 +807,29 @@ impl SessionController {
             active.selected_subtitle_id = poll.selected_subtitle_id;
 
             if let Some(end_reason) = poll.end_event {
-                if active.suppress_next_end && !matches!(end_reason, EndReason::NaturalEof) {
-                    // Expected stop/redirect end event from item replacement.
+                if active.suppress_next_end {
+                    // Expected end-file event from item replacement or prior file teardown.
                     active.suppress_next_end = false;
                 } else {
-                    active.suppress_next_end = false;
                     match end_reason {
                         EndReason::NaturalEof => {
                             if !active.eof_handled
                                 && matches!(
                                     active.status.as_str(),
-                                    "loading" | "playing" | "paused" | "buffering"
+                                    "playing" | "paused" | "buffering"
                                 )
                             {
                                 active.eof_handled = true;
                                 should_save_completed = true;
-                                if active.autoplay_next {
-                                    if let Some(cur_ep) = active.episode_id.as_deref() {
-                                        if let Some(idx) = active
-                                            .queue
-                                            .iter()
-                                            .position(|q| q.item.episode_id == cur_ep)
-                                        {
-                                            if let Some(next_ep) = active.queue.get(idx + 1) {
-                                                trigger_advance_id =
-                                                    Some(next_ep.item.episode_id.clone());
-                                            }
-                                        }
-                                    }
+                                if active.autoplay_next
+                                    && let Some(cur_ep) = active.episode_id.as_deref()
+                                    && let Some(idx) = active
+                                        .queue
+                                        .iter()
+                                        .position(|q| q.item.episode_id == cur_ep)
+                                    && let Some(next_ep) = active.queue.get(idx + 1)
+                                {
+                                    trigger_advance_id = Some(next_ep.item.episode_id.clone());
                                 }
                                 if trigger_advance_id.is_none() {
                                     active.status = "ended".into();
@@ -776,7 +875,6 @@ impl SessionController {
         }
 
         if let Some(next_ep_id) = trigger_advance_id {
-            // Advance to the next episode cleanly without re-persisting the already completed one.
             let next_info = self.active.as_ref().and_then(|a| {
                 a.queue
                     .iter()
@@ -785,27 +883,32 @@ impl SessionController {
                         (
                             q.url.clone(),
                             format!("S{} E{} · {}", q.item.season, q.item.number, q.item.title),
+                            a.preferred_audio.clone(),
+                            a.subtitles_default,
                         )
                     })
             });
-            if let Some((url, title)) = next_info {
-                if let Some(engine) = self.engine.as_mut() {
-                    if engine.load(&url, 0).is_ok() {
-                        let _ = engine.set_pause(false);
-                        if let Some(a) = self.active.as_mut() {
-                            a.episode_id = Some(next_ep_id);
-                            a.episode_title = Some(title);
-                            a.status = "loading".into();
-                            a.position_ms = 0;
-                            a.duration_ms = 0;
-                            a.error = None;
-                            a.eof_handled = false;
-                            a.last_saved_at_ms = now;
-                        }
-                    } else if let Some(a) = self.active.as_mut() {
-                        a.status = "error".into();
-                        a.error = Some(AppError::player("Unable to load the next episode."));
+            if let Some((url, title, pref_audio, pref_subs)) = next_info
+                && let Some(engine) = self.engine.as_mut()
+            {
+                engine.apply_preferences(&pref_audio, pref_subs);
+                if engine.load(&url, 0).is_ok() {
+                    let _ = engine.set_pause(false);
+                    if let Some(a) = self.active.as_mut() {
+                        a.episode_id = Some(next_ep_id);
+                        a.episode_title = Some(title);
+                        a.current_url = url;
+                        a.status = "loading".into();
+                        a.position_ms = 0;
+                        a.duration_ms = 0;
+                        a.error = None;
+                        a.eof_handled = false;
+                        a.suppress_next_end = true;
+                        a.last_saved_at_ms = now;
                     }
+                } else if let Some(a) = self.active.as_mut() {
+                    a.status = "error".into();
+                    a.error = Some(AppError::player("Unable to load the next episode."));
                 }
             }
         }
@@ -889,12 +992,14 @@ mod tests {
             self.subtitle_track = id;
             Ok(())
         }
+        fn apply_preferences(&mut self, _: &str, _: bool) {}
         fn stop(&mut self) -> Result<(), AppError> {
             self.stopped_count += 1;
             Ok(())
         }
         fn poll_state(&mut self) -> EnginePoll {
             self.polls.pop_front().unwrap_or(EnginePoll {
+                file_loaded: true,
                 paused: self.paused,
                 seekable: true,
                 volume: 80.0,
@@ -951,38 +1056,70 @@ mod tests {
                     },
                     url: "http://example.test/series/u/p/ep-102.mp4".into(),
                 },
+                QueueEpisode {
+                    item: QueueItem {
+                        episode_id: "ep-103".into(),
+                        season: 1,
+                        number: 3,
+                        title: "Arrival".into(),
+                    },
+                    url: "http://example.test/series/u/p/ep-103.mp4".into(),
+                },
             ],
             autoplay_next,
+            preferred_audio: "English".into(),
             subtitles_default: false,
         }
     }
 
     #[test]
-    fn natural_eof_advances_once_and_duplicate_eof_does_not_skip_episode() {
+    fn natural_eof_advances_once_and_stale_eof_stop_or_position_never_skips_or_corrupts() {
         let mut db = Store::open_memory().unwrap();
         let prov = db.connect_provider("acc", "http://a.test/").unwrap();
         let prof = db.profiles().unwrap()[0].id.clone();
 
         let mut fake = FakeEngine::default();
+        // Tick 1: ep-101 playing
         fake.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 500_000,
             duration_ms: 1_000_000,
             seekable: true,
             ..EnginePoll::default()
         });
+        // Tick 2: ep-101 natural EOF -> auto-advances to ep-102 (status=loading, suppress_next_end=true)
         fake.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 1_000_000,
             duration_ms: 1_000_000,
             seekable: true,
             end_event: Some(EndReason::NaturalEof),
             ..EnginePoll::default()
         });
-        // Duplicate stale EOF while next episode is loading must not advance again!
+        // Tick 3: stale pre-load poll with old position + Stop event while ep-102 hasn't loaded yet
         fake.push_poll(EnginePoll {
-            position_ms: 0,
-            duration_ms: 0,
+            file_loaded: false,
+            position_ms: 999_000,
+            duration_ms: 1_000_000,
             seekable: true,
             end_event: Some(EndReason::Stop),
+            ..EnginePoll::default()
+        });
+        // Tick 4: stale duplicate NaturalEof while ep-102 is STILL loading
+        fake.push_poll(EnginePoll {
+            file_loaded: false,
+            position_ms: 999_000,
+            duration_ms: 1_000_000,
+            seekable: true,
+            end_event: Some(EndReason::NaturalEof),
+            ..EnginePoll::default()
+        });
+        // Tick 5: ep-102 actually loads at 0ms
+        fake.push_poll(EnginePoll {
+            file_loaded: true,
+            position_ms: 1_000,
+            duration_ms: 2_000_000,
+            seekable: true,
             ..EnginePoll::default()
         });
 
@@ -999,6 +1136,23 @@ mod tests {
         assert_eq!(s2.episode_id.as_deref(), Some("ep-102"));
         assert_eq!(s2.status, "loading");
 
+        // Tick 3: must NOT stop playback or adopt stale 999s position
+        let s3 = controller.tick(&mut db, 3250).unwrap();
+        assert_eq!(s3.episode_id.as_deref(), Some("ep-102"));
+        assert_eq!(s3.status, "loading");
+        assert_eq!(s3.position_ms, 0);
+
+        // Tick 4: must NOT advance to ep-103 on stale NaturalEof while loading
+        let s4 = controller.tick(&mut db, 3500).unwrap();
+        assert_eq!(s4.episode_id.as_deref(), Some("ep-102"));
+        assert_eq!(s4.status, "loading");
+
+        // Tick 5: ep-102 is now genuinely playing
+        let s5 = controller.tick(&mut db, 3750).unwrap();
+        assert_eq!(s5.episode_id.as_deref(), Some("ep-102"));
+        assert_eq!(s5.status, "playing");
+        assert_eq!(s5.position_ms, 1_000);
+
         // Completed ep-101 removed from Continue Watching (100% >= 95%)
         assert!(db.continue_history(&prov, &prof).unwrap().is_empty());
         assert_eq!(db.all_history(&prov, &prof).unwrap().len(), 1);
@@ -1013,12 +1167,14 @@ mod tests {
         // 1. Error end reason does not advance and does not mark complete
         let mut fake = FakeEngine::default();
         fake.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 200_000,
             duration_ms: 1_000_000,
             seekable: true,
             ..EnginePoll::default()
         });
         fake.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 200_000,
             duration_ms: 1_000_000,
             seekable: true,
@@ -1038,6 +1194,14 @@ mod tests {
         // 2. Autoplay off ends cleanly without advancing
         let mut fake2 = FakeEngine::default();
         fake2.push_poll(EnginePoll {
+            file_loaded: true,
+            position_ms: 900_000,
+            duration_ms: 1_000_000,
+            seekable: true,
+            ..EnginePoll::default()
+        });
+        fake2.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 940_000,
             duration_ms: 1_000_000,
             seekable: true,
@@ -1048,6 +1212,7 @@ mod tests {
         ctrl2
             .start(series_request(&prov, &prof, false), &mut db, 20_000)
             .unwrap();
+        ctrl2.tick(&mut db, 20_500);
         let end_snap = ctrl2.tick(&mut db, 21_000).unwrap();
         assert_eq!(end_snap.status, "ended");
         assert_eq!(end_snap.episode_id.as_deref(), Some("ep-101"));
@@ -1055,6 +1220,7 @@ mod tests {
         // 3. Manual stop saves exact 94% progress and never advances
         let mut fake3 = FakeEngine::default();
         fake3.push_poll(EnginePoll {
+            file_loaded: true,
             position_ms: 940_000,
             duration_ms: 1_000_000,
             seekable: true,
@@ -1095,7 +1261,11 @@ mod tests {
             .unwrap();
         assert_eq!(prev.episode_id.as_deref(), Some("ep-101"));
         let sel = ctrl
-            .control(PlayerControlCommand::SelectEpisode("ep-102".into()), &mut db, 4000)
+            .control(
+                PlayerControlCommand::SelectEpisode("ep-102".into()),
+                &mut db,
+                4000,
+            )
             .unwrap();
         assert_eq!(sel.episode_id.as_deref(), Some("ep-102"));
 
@@ -1130,6 +1300,7 @@ mod tests {
                 start_ms: 0,
                 queue: vec![],
                 autoplay_next: false,
+                preferred_audio: "English".into(),
                 subtitles_default: false,
             },
             &mut db,

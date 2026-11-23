@@ -63,10 +63,10 @@ pub fn extract_year(text: &str) -> Option<String> {
             let after_ok = i + 4 == bytes.len() || !bytes[i + 4].is_ascii_digit();
             if before_ok && after_ok {
                 let year_str = std::str::from_utf8(slice).ok()?;
-                if let Ok(y) = year_str.parse::<u16>() {
-                    if (1900..=2099).contains(&y) {
-                        return Some(year_str.to_string());
-                    }
+                if let Ok(y) = year_str.parse::<u16>()
+                    && (1900..=2099).contains(&y)
+                {
+                    return Some(year_str.to_string());
                 }
             }
         }
@@ -115,12 +115,11 @@ fn decode_response_bytes(bytes: &[u8]) -> String {
         Err(_) => {
             // Windows-1252 fallback (matching Android XtreamClient.decode).
             const CP1252_HIGH: [char; 32] = [
-                '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}',
-                '\u{2020}', '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}',
-                '\u{0152}', '\u{008D}', '\u{017D}', '\u{008F}', '\u{0090}', '\u{2018}',
-                '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}', '\u{2014}',
-                '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}', '\u{009D}',
-                '\u{017E}', '\u{0178}',
+                '\u{20AC}', '\u{0081}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
+                '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{008D}',
+                '\u{017D}', '\u{008F}', '\u{0090}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}',
+                '\u{2022}', '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}',
+                '\u{0153}', '\u{009D}', '\u{017E}', '\u{0178}',
             ];
             let mut out = String::with_capacity(bytes.len());
             for &b in bytes {
@@ -159,7 +158,7 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
         }
     };
     let mut out = Vec::with_capacity((cleaned.len() / 4) * 3);
-    for chunk in cleaned.chunks_exact(4) {
+    for chunk in cleaned.as_chunks::<4>().0 {
         let a = val(chunk[0])?;
         let b = val(chunk[1])?;
         out.push((a << 2) | (b >> 4));
@@ -180,19 +179,18 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 pub fn decode_epg_text(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.len() >= 4
-        && trimmed
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'=' | b' ' | b'\n' | b'\r' | b'\t'))
+        && trimmed.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(b, b'+' | b'/' | b'=' | b' ' | b'\n' | b'\r' | b'\t')
+        })
+        && let Some(bytes) = decode_base64(trimmed)
+        && let Ok(decoded) = String::from_utf8(bytes)
     {
-        if let Some(bytes) = decode_base64(trimmed) {
-            if let Ok(decoded) = String::from_utf8(bytes) {
-                let printable = decoded
-                    .chars()
-                    .all(|c| c == '\t' || c == '\n' || c == '\r' || !c.is_control());
-                if printable && !decoded.trim().is_empty() {
-                    return decoded.trim().to_string();
-                }
-            }
+        let printable = decoded
+            .chars()
+            .all(|c| c == '\t' || c == '\n' || c == '\r' || !c.is_control());
+        if printable && !decoded.trim().is_empty() {
+            return decoded.trim().to_string();
         }
     }
     trimmed.to_string()
@@ -200,16 +198,24 @@ pub fn decode_epg_text(raw: &str) -> String {
 
 /// Parses unix seconds/millis or `YYYY-MM-DD HH:MM:SS` (UTC) into epoch milliseconds.
 pub fn parse_epg_timestamp(obj: &Value, ts_key: &str, text_key: &str) -> Option<i64> {
-    if let Some(ts) = json_i64(&obj[ts_key]) {
-        if ts > 0 {
-            return Some(if ts > 1_000_000_000_000 { ts } else { ts * 1000 });
-        }
+    if let Some(ts) = json_i64(&obj[ts_key])
+        && ts > 0
+    {
+        return Some(if ts > 1_000_000_000_000 {
+            ts
+        } else {
+            ts * 1000
+        });
     }
     let text = json_string(&obj[text_key])?;
-    if let Ok(ts) = text.parse::<i64>() {
-        if ts > 0 {
-            return Some(if ts > 1_000_000_000_000 { ts } else { ts * 1000 });
-        }
+    if let Ok(ts) = text.parse::<i64>()
+        && ts > 0
+    {
+        return Some(if ts > 1_000_000_000_000 {
+            ts
+        } else {
+            ts * 1000
+        });
     }
     parse_datetime_utc_ms(&text)
 }
@@ -221,7 +227,12 @@ fn parse_datetime_utc_ms(text: &str) -> Option<i64> {
         return None;
     }
     let b = s.as_bytes();
-    if b[4] != b'-' || b[7] != b'-' || (b[10] != b' ' && b[10] != b'T') || b[13] != b':' || b[16] != b':' {
+    if b[4] != b'-'
+        || b[7] != b'-'
+        || (b[10] != b' ' && b[10] != b'T')
+        || b[13] != b':'
+        || b[16] != b':'
+    {
         return None;
     }
     let year: i64 = s[0..4].parse().ok()?;
@@ -247,12 +258,12 @@ fn parse_datetime_utc_ms(text: &str) -> Option<i64> {
     if rest.len() >= 5 && (rest.starts_with('+') || rest.starts_with('-')) {
         let sign = if rest.starts_with('+') { 1i64 } else { -1i64 };
         let digits: String = rest[1..].chars().filter(|c| c.is_ascii_digit()).collect();
-        if digits.len() >= 4 {
-            if let (Ok(oh), Ok(om)) = (digits[0..2].parse::<i64>(), digits[2..4].parse::<i64>()) {
-                if oh <= 14 && om <= 59 {
-                    total_secs -= sign * (oh * 3600 + om * 60);
-                }
-            }
+        if digits.len() >= 4
+            && let (Ok(oh), Ok(om)) = (digits[0..2].parse::<i64>(), digits[2..4].parse::<i64>())
+            && oh <= 14
+            && om <= 59
+        {
+            total_secs -= sign * (oh * 3600 + om * 60);
         }
     }
     Some(total_secs * 1000)
@@ -424,7 +435,11 @@ impl ProviderSession {
 
     /// Performs a GET against Xtream `player_api.php` with bounded retries (max 2)
     /// for transient network, 429, and 5xx errors only. Never retries 401/403.
-    pub async fn request(&self, action: &str, parameters: &[(&str, &str)]) -> Result<Value, AppError> {
+    pub async fn request(
+        &self,
+        action: &str,
+        parameters: &[(&str, &str)],
+    ) -> Result<Value, AppError> {
         let url = self.api_url(action, parameters)?;
         let max_retries = 2usize;
 
@@ -510,9 +525,8 @@ impl ProviderSession {
                 ));
             }
             let text = decode_response_bytes(&bytes);
-            return serde_json::from_str(text.trim()).map_err(|_| {
-                AppError::provider("Provider returned malformed data.", true)
-            });
+            return serde_json::from_str(text.trim())
+                .map_err(|_| AppError::provider("Provider returned malformed data.", true));
         }
         Err(AppError::network("Provider request failed.", true))
     }
@@ -547,10 +561,11 @@ impl ProviderSession {
         parse_catalog_items(&value, kind, category_id)
     }
 
-    pub async fn fetch_movie_details(&self, vod_id: &str) -> Result<CachedDetailsPayload, AppError> {
-        let value = self
-            .request("get_vod_info", &[("vod_id", vod_id)])
-            .await?;
+    pub async fn fetch_movie_details(
+        &self,
+        vod_id: &str,
+    ) -> Result<CachedDetailsPayload, AppError> {
+        let value = self.request("get_vod_info", &[("vod_id", vod_id)]).await?;
         Ok(parse_movie_details(&value))
     }
 
@@ -771,7 +786,9 @@ pub fn parse_movie_details(root: &Value) -> CachedDetailsPayload {
     let duration_minutes = if duration_secs > 0 {
         Some((duration_secs / 60).max(1) as i32)
     } else {
-        json_i64(&info["duration"]).filter(|d| *d > 0).map(|d| d as i32)
+        json_i64(&info["duration"])
+            .filter(|d| *d > 0)
+            .map(|d| d as i32)
     };
     let cast = json_string(&info["cast"]).or_else(|| json_string(&info["actors"]));
     CachedDetailsPayload {
@@ -811,7 +828,9 @@ pub fn parse_series_details(root: &Value) -> CachedDetailsPayload {
                 continue;
             };
             let ep_info = &item["info"];
-            let season = json_i64(&item["season"]).map(|v| v as i32).unwrap_or(season_num);
+            let season = json_i64(&item["season"])
+                .map(|v| v as i32)
+                .unwrap_or(season_num);
             let number = json_i64(&item["episode_num"])
                 .map(|v| v as i32)
                 .unwrap_or((idx + 1) as i32);
@@ -949,7 +968,10 @@ mod tests {
             .api_url("get_vod_streams", &[("category_id", "12")])
             .unwrap();
         assert_eq!(api.path(), "/iptv/player_api.php");
-        assert!(api.query_pairs().any(|(k, v)| k == "username" && v == "a/b &?"));
+        assert!(
+            api.query_pairs()
+                .any(|(k, v)| k == "username" && v == "a/b &?")
+        );
         let stream = p.stream_url("movie", "15", "mkv").unwrap();
         assert!(stream.as_str().contains("a%2Fb%20&%3F/p%2F%23%20&/15.mkv"));
         assert_ne!(
@@ -969,8 +991,14 @@ mod tests {
         ] {
             assert!(validate_account(&value).is_err());
         }
-        assert!(validate_account(&serde_json::json!({"user_info":{"auth":"1","status":"Active"}})).is_ok());
-        assert!(validate_account(&serde_json::json!({"user_info":{"auth":1,"status":"Active"}})).is_ok());
+        assert!(
+            validate_account(&serde_json::json!({"user_info":{"auth":"1","status":"Active"}}))
+                .is_ok()
+        );
+        assert!(
+            validate_account(&serde_json::json!({"user_info":{"auth":1,"status":"Active"}}))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1004,7 +1032,10 @@ mod tests {
         assert_eq!(items[0].year.as_deref(), Some("2016"));
         assert_eq!(items[0].rating, Some(7.9));
         assert_eq!(items[0].extension.as_deref(), Some("mp4"));
-        assert_eq!(items[0].poster.as_deref(), Some("https://img.test/arrival.jpg"));
+        assert_eq!(
+            items[0].poster.as_deref(),
+            Some("https://img.test/arrival.jpg")
+        );
         assert_eq!(items[1].id, "99");
         assert_eq!(items[1].poster, None);
         assert_eq!(items[1].extension.as_deref(), Some("mkv"));
@@ -1040,7 +1071,10 @@ mod tests {
         assert_eq!(seasons[0].episodes[0].image_url, None);
         assert_eq!(seasons[1].number, 2);
         assert_eq!(seasons[1].episodes[0].id, "201");
-        assert_eq!(seasons[1].episodes[0].container_extension.as_deref(), Some("mp4"));
+        assert_eq!(
+            seasons[1].episodes[0].container_extension.as_deref(),
+            Some("mp4")
+        );
         assert_eq!(seasons[1].episodes[1].id, "202");
         assert_eq!(seasons[1].episodes[1].duration_minutes, Some(51));
     }
@@ -1088,7 +1122,10 @@ mod tests {
     #[test]
     fn retries_transient_503_and_never_retries_401() {
         use std::io::{Read, Write};
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
@@ -1098,7 +1135,10 @@ mod tests {
             // 1st: 503, 2nd: 200 OK, 3rd: 401 (should NOT retry)
             let responses = [
                 ("503 Service Unavailable", r#"{"error":"busy"}"#),
-                ("200 OK", r#"[{"category_id":"1","category_name":"Movies"}]"#),
+                (
+                    "200 OK",
+                    r#"[{"category_id":"1","category_name":"Movies"}]"#,
+                ),
                 ("401 Unauthorized", r#"{"error":"nope"}"#),
             ];
             for (status, body) in responses {

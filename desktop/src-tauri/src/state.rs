@@ -14,6 +14,7 @@ use std::{
 
 struct ConnectionState {
     restored: bool,
+    provider_id: Option<String>,
     session: Option<ProviderSession>,
     status: CredentialStatus,
     warning: Option<String>,
@@ -39,6 +40,7 @@ impl AppState {
             store: Mutex::new(None),
             connection: Mutex::new(ConnectionState {
                 restored: false,
+                provider_id: None,
                 session: None,
                 status: CredentialStatus::None,
                 warning: None,
@@ -63,19 +65,28 @@ impl AppState {
         action(guard.as_mut().ok_or_else(unavailable)?)
     }
 
-    pub fn active_session(&self) -> Result<Option<ProviderSession>, AppError> {
+    /// Returns the active session only if it belongs to `expected_provider_id`,
+    /// preventing cross-provider writes during concurrent provider switches.
+    pub fn active_session_for_provider(
+        &self,
+        expected_provider_id: &str,
+    ) -> Result<Option<ProviderSession>, AppError> {
         let conn = self.connection.lock().map_err(|_| unavailable())?;
-        Ok(conn.session.clone())
+        if conn.provider_id.as_deref() == Some(expected_provider_id) {
+            Ok(conn.session.clone())
+        } else {
+            Ok(None)
+        }
     }
 
+    /// Atomically returns the active `(ProviderSession, provider_id)` pair under a single lock,
+    /// avoiding torn reads across `connect`/`disconnect`.
     pub fn require_session(&self) -> Result<(ProviderSession, String), AppError> {
-        let session = self
-            .active_session()?
-            .ok_or_else(|| AppError::unauthenticated("Connect a provider to continue."))?;
-        let provider_id = self
-            .with_store(|s| s.active_provider_id())?
-            .ok_or_else(|| AppError::unauthenticated("No active provider configured."))?;
-        Ok((session, provider_id))
+        let conn = self.connection.lock().map_err(|_| unavailable())?;
+        match (conn.session.clone(), conn.provider_id.clone()) {
+            (Some(session), Some(provider_id)) => Ok((session, provider_id)),
+            _ => Err(AppError::unauthenticated("Connect a provider to continue.")),
+        }
     }
 
     pub fn active_scope(&self) -> Result<(String, String), AppError> {
@@ -94,6 +105,7 @@ impl AppState {
         self.with_store(|store| {
             let mut connection = self.connection.lock().map_err(|_| unavailable())?;
             if !connection.restored {
+                let active_provider = store.active_provider_id()?;
                 if let Some(key) = store.preference("remembered_account")? {
                     match self.secrets.load() {
                         Ok(Some(saved)) => {
@@ -101,11 +113,11 @@ impl AppState {
                                 &saved.base_url,
                                 &saved.username,
                                 &saved.password,
-                            ) {
-                                if session.account_key() == key {
-                                    connection.session = Some(session);
-                                    connection.status = CredentialStatus::Remembered;
-                                }
+                            ) && session.account_key() == key
+                            {
+                                connection.provider_id = active_provider;
+                                connection.session = Some(session);
+                                connection.status = CredentialStatus::Remembered;
                             }
                         }
                         Ok(None) => {}
@@ -157,7 +169,7 @@ impl AppState {
         session.authenticate().await?;
         let key = session.account_key();
         self.with_store(|store| {
-            store.connect_provider(&key, session.base.as_str())?;
+            let provider_id = store.connect_provider(&key, session.base.as_str())?;
             // Clear restoration marker before changing OS secrets so a failed save can
             // never accidentally restore a prior login on the next launch.
             store.clear_preference("remembered_account")?;
@@ -175,6 +187,7 @@ impl AppState {
             };
             *self.connection.lock().map_err(|_| unavailable())? = ConnectionState {
                 restored: true,
+                provider_id: Some(provider_id),
                 session: Some(session),
                 status,
                 warning,
@@ -184,16 +197,27 @@ impl AppState {
         self.bootstrap()
     }
 
-    pub fn disconnect(&self) -> Result<(), AppError> {
+    pub async fn disconnect(&self) -> Result<(), AppError> {
+        let _gate = self.change_gate.lock().await;
         self.with_store(|store| {
+            let had_remembered = store.preference("remembered_account")?.is_some();
             store.clear_preference("remembered_account")?;
-            *self.connection.lock().map_err(|_| unavailable())? = ConnectionState {
-                restored: true,
-                session: None,
-                status: CredentialStatus::None,
-                warning: None,
+            let prev_status = {
+                let mut conn = self.connection.lock().map_err(|_| unavailable())?;
+                let prev = conn.status;
+                *conn = ConnectionState {
+                    restored: true,
+                    provider_id: None,
+                    session: None,
+                    status: CredentialStatus::None,
+                    warning: None,
+                };
+                prev
             };
-            if self.secrets.delete().is_err() {
+            let delete_res = self.secrets.delete();
+            if delete_res.is_err()
+                && (had_remembered || prev_status == CredentialStatus::Remembered)
+            {
                 return Err(AppError::storage(
                     "Disconnected. Secure storage could not delete the saved entry; unlock it and retry Disconnect.",
                     true,
@@ -327,10 +351,8 @@ mod tests {
                 .unwrap();
             }
         });
-        let path = std::env::temp_dir().join(format!(
-            "marquee-state-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("marquee-state-{}.sqlite", uuid::Uuid::new_v4()));
         let secrets = MemorySecrets::default();
         let state = AppState::new(path.clone(), Box::new(secrets.clone()));
         tauri::async_runtime::block_on(async {
@@ -348,7 +370,9 @@ mod tests {
         drop(state);
         let reopened = AppState::new(path.clone(), Box::new(secrets.clone()));
         assert!(reopened.bootstrap().unwrap().connected);
-        reopened.disconnect().unwrap();
+        tauri::async_runtime::block_on(async {
+            reopened.disconnect().await.unwrap();
+        });
         assert!(secrets.load().unwrap().is_none());
         assert!(!reopened.bootstrap().unwrap().connected);
         drop(reopened);
@@ -356,7 +380,7 @@ mod tests {
     }
 
     #[test]
-    fn locked_secret_store_with_remember_returns_explicit_session_only_and_warning() {
+    fn locked_secret_store_with_remember_returns_explicit_session_only_and_clean_disconnect() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
@@ -373,16 +397,16 @@ mod tests {
             )
             .unwrap();
         });
-        let path = std::env::temp_dir().join(format!(
-            "marquee-locked-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("marquee-locked-{}.sqlite", uuid::Uuid::new_v4()));
         let state = AppState::new(path.clone(), Box::new(FailingSecrets));
         tauri::async_runtime::block_on(async {
             let boot = state.connect(&base, "user", "pass", true).await.unwrap();
             assert!(boot.connected);
             assert_eq!(boot.credential_status, CredentialStatus::Session);
             assert!(boot.credential_warning.is_some());
+            // Session-only disconnect should succeed without misleading secret-store error
+            state.disconnect().await.unwrap();
         });
         server.join().unwrap();
         drop(state);

@@ -101,7 +101,7 @@ export default function Details({
   const art = isSafeImageUrl(details.backdropUrl || details.posterUrl)
     ? details.backdropUrl || details.posterUrl
     : undefined;
-  const isSaved = savedKeys.has(mediaKey(details.ref)) || details.inMyList;
+  const isSaved = savedKeys.has(mediaKey(details.ref));
   const asMediaItem: MediaItem = {
     ref: details.ref,
     name: details.name,

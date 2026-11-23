@@ -1,0 +1,20 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "bundle": {
+    "targets": ["appimage", "deb"],
+    "resources": {
+      "resources/mpv/libmpv.so.2": "resources/mpv/libmpv.so.2",
+      "../resources/THIRD_PARTY_NOTICES.md": "resources/THIRD_PARTY_NOTICES.md"
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libsecret-1-0",
+          "libmpv2"
+        ]
+      }
+    }
+  }
+}

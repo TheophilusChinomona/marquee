@@ -36,6 +36,7 @@ export default function MyList({
 
   useEffect(() => {
     setOffset(0);
+    setPage(null);
   }, [profileId]);
 
   useEffect(() => {

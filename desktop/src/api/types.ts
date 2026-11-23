@@ -231,6 +231,7 @@ export type PlayerControlAction =
   | { action: 'previousEpisode' }
   | { action: 'nextEpisode' }
   | { action: 'selectEpisode'; value: string }
+  | { action: 'overlayVisible'; value: boolean }
   | { action: 'stop' };
 
 export type CatalogSort = 'recommended' | 'year' | 'title' | 'added';

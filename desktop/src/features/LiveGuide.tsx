@@ -170,7 +170,7 @@ export default function LiveGuide({
         if (!epgReq.isCurrent(token)) return;
         setEpgByChannel({});
       });
-  }, [api, channelIdKey, windowStartMs, windowEndMs, epgReq]);
+  }, [api, channelIdKey, windowStartMs, windowEndMs, refreshStamp, epgReq]);
 
   const channels = channelsPage?.items ?? [];
   const total = channelsPage?.total ?? 0;

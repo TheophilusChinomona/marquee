@@ -90,6 +90,17 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
     [api],
   );
 
+  // Hide the native child video surface while a React overlay drawer is open so it is never occluded.
+  const togglePanel = useCallback(
+    (next: 'tracks' | 'episodes' | null) => {
+      setPanel(next);
+      if (api.playerControl) {
+        void api.playerControl({ action: 'overlayVisible', value: next !== null }).catch(() => {});
+      }
+    },
+    [api],
+  );
+
   const toggleFullscreen = useCallback(async () => {
     try {
       const win = getCurrentWindow();
@@ -151,7 +162,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
       } else if (e.key === 'Escape') {
         e.preventDefault();
         if (panel) {
-          setPanel(null);
+          togglePanel(null);
         } else {
           void handleClose();
         }
@@ -159,7 +170,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [canSeek, handleClose, isPaused, panel, sendControl, snapshot.muted, toggleFullscreen]);
+  }, [canSeek, handleClose, isPaused, panel, sendControl, snapshot.muted, toggleFullscreen, togglePanel]);
 
   return (
     <div className="native-player-shell" role="dialog" aria-label="Video player">
@@ -329,7 +340,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
               <button
                 type="button"
                 className="toolbar-text"
-                onClick={() => setPanel(panel === 'episodes' ? null : 'episodes')}
+                onClick={() => togglePanel(panel === 'episodes' ? null : 'episodes')}
               >
                 <ListVideo size={19} />
                 Episodes
@@ -338,7 +349,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
             <button
               type="button"
               className="toolbar-text"
-              onClick={() => setPanel(panel === 'tracks' ? null : 'tracks')}
+              onClick={() => togglePanel(panel === 'tracks' ? null : 'tracks')}
             >
               <Subtitles size={20} />
               Audio & subtitles
@@ -363,7 +374,7 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
               type="button"
               className="icon-button"
               aria-label="Close panel"
-              onClick={() => setPanel(null)}
+              onClick={() => togglePanel(null)}
             >
               <X size={18} />
             </button>
@@ -416,8 +427,8 @@ export default function Player({ api, initialSnapshot, onClose, onRetry }: Playe
                 className="player-episode"
                 key={ep.episodeId}
                 onClick={() => {
+                  togglePanel(null);
                   void sendControl({ action: 'selectEpisode', value: ep.episodeId });
-                  setPanel(null);
                 }}
               >
                 <span>

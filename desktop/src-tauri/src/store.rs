@@ -115,10 +115,10 @@ impl Store {
         if let Some(v) = self.preference("setting_subtitles_default")? {
             settings.subtitles_default = v == "true";
         }
-        if let Some(v) = self.preference("setting_preferred_audio")? {
-            if !v.trim().is_empty() {
-                settings.preferred_audio = v;
-            }
+        if let Some(v) = self.preference("setting_preferred_audio")?
+            && !v.trim().is_empty()
+        {
+            settings.preferred_audio = v;
         }
         if let Some(v) = self.preference("setting_compact_library")? {
             settings.compact_library = v == "true";
@@ -413,13 +413,7 @@ impl Store {
             .map_err(storage_error)
     }
 
-    pub fn is_favorite(
-        &self,
-        provider: &str,
-        profile: &str,
-        kind: &str,
-        id: &str,
-    ) -> Result<bool> {
+    pub fn is_favorite(&self, provider: &str, profile: &str, kind: &str, id: &str) -> Result<bool> {
         let exists: Option<i32> = self
             .connection
             .query_row(
@@ -572,7 +566,7 @@ impl Store {
                  LIMIT 40",
             )
             .map_err(storage_error)?;
-        statement
+        let raw: Vec<HistoryEntry> = statement
             .query_map(params![provider, profile], |r| {
                 Ok(HistoryEntry {
                     kind: r.get(0)?,
@@ -586,7 +580,17 @@ impl Store {
             })
             .map_err(storage_error)?
             .collect::<std::result::Result<_, _>>()
-            .map_err(storage_error)
+            .map_err(storage_error)?;
+
+        // Deduplicate by (kind, media_id), keeping the most recent episode for a series.
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::with_capacity(raw.len());
+        for entry in raw {
+            if seen.insert((entry.kind.clone(), entry.media_id.clone())) {
+                out.push(entry);
+            }
+        }
+        Ok(out)
     }
 
     pub fn all_history(&self, provider: &str, profile: &str) -> Result<Vec<HistoryEntry>> {
@@ -695,7 +699,12 @@ impl Store {
             .map_err(storage_error)
     }
 
-    pub fn get_item(&self, provider: &str, kind: MediaKind, id: &str) -> Result<Option<(MediaItem, Option<String>)>> {
+    pub fn get_item(
+        &self,
+        provider: &str,
+        kind: MediaKind,
+        id: &str,
+    ) -> Result<Option<(MediaItem, Option<String>)>> {
         let (generation, _) = self.provider_generation(provider)?;
         let Some(generation) = generation else {
             return Ok(None);
@@ -868,10 +877,11 @@ impl Store {
             .map_err(storage_error)?
             .flatten();
 
-        if let Some(prev) = prev_generation.as_deref() {
-            if prev != generation {
-                tx.execute(
-                    "UPDATE catalogue_items
+        if let Some(prev) = prev_generation.as_deref()
+            && prev != generation
+        {
+            tx.execute(
+                "UPDATE catalogue_items
                      SET details = (
                          SELECT old.details FROM catalogue_items old
                          WHERE old.provider_id = catalogue_items.provider_id
@@ -881,10 +891,9 @@ impl Store {
                            AND old.details IS NOT NULL
                      )
                      WHERE provider_id = ?1 AND generation = ?2 AND details IS NULL",
-                    params![provider_id, generation, prev],
-                )
-                .map_err(storage_error)?;
-            }
+                params![provider_id, generation, prev],
+            )
+            .map_err(storage_error)?;
         }
 
         tx.execute(
@@ -972,6 +981,7 @@ impl Store {
             .map_err(storage_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn query_catalog(
         &self,
         provider_id: &str,
@@ -993,7 +1003,10 @@ impl Store {
             });
         };
 
-        let mut where_clauses = vec!["c.provider_id = ?1".to_string(), "c.generation = ?2".to_string()];
+        let mut where_clauses = vec![
+            "c.provider_id = ?1".to_string(),
+            "c.generation = ?2".to_string(),
+        ];
         let mut bind_values: Vec<rusqlite::types::Value> = vec![
             rusqlite::types::Value::Text(provider_id.to_string()),
             rusqlite::types::Value::Text(generation),
@@ -1014,7 +1027,10 @@ impl Store {
                 .replace('%', "\\%")
                 .replace('_', "\\_");
             bind_values.push(rusqlite::types::Value::Text(format!("%{escaped}%")));
-            where_clauses.push(format!("c.normalized_name LIKE ?{} ESCAPE '\\'", bind_values.len()));
+            where_clauses.push(format!(
+                "c.normalized_name LIKE ?{} ESCAPE '\\'",
+                bind_values.len()
+            ));
         }
 
         let where_sql = where_clauses.join(" AND ");
@@ -1053,7 +1069,10 @@ impl Store {
              ORDER BY {order_sql}
              LIMIT ?{limit_idx} OFFSET ?{offset_idx}"
         );
-        let mut stmt = self.connection.prepare(&select_sql).map_err(storage_error)?;
+        let mut stmt = self
+            .connection
+            .prepare(&select_sql)
+            .map_err(storage_error)?;
         let rows = stmt
             .query_map(
                 rusqlite::params_from_iter(query_binds.iter()),
@@ -1132,20 +1151,17 @@ impl Store {
                  ORDER BY updated_at DESC, rowid DESC",
             )
             .map_err(storage_error)?;
-        stmt.query_map(
-            params![provider, profile, kind.as_str(), media_id],
-            |r| {
-                Ok(HistoryEntry {
-                    kind: r.get(0)?,
-                    media_id: r.get(1)?,
-                    episode_id: r.get(2)?,
-                    position_ms: r.get(3)?,
-                    duration_ms: r.get(4)?,
-                    updated_at: r.get(5)?,
-                    completed: r.get::<_, i64>(6)? != 0,
-                })
-            },
-        )
+        stmt.query_map(params![provider, profile, kind.as_str(), media_id], |r| {
+            Ok(HistoryEntry {
+                kind: r.get(0)?,
+                media_id: r.get(1)?,
+                episode_id: r.get(2)?,
+                position_ms: r.get(3)?,
+                duration_ms: r.get(4)?,
+                updated_at: r.get(5)?,
+                completed: r.get::<_, i64>(6)? != 0,
+            })
+        })
         .map_err(storage_error)?
         .collect::<std::result::Result<_, _>>()
         .map_err(storage_error)
@@ -1190,7 +1206,10 @@ pub(crate) fn row_to_media_item(r: &rusqlite::Row<'_>) -> rusqlite::Result<Media
     let kind_str: String = r.get(0)?;
     let kind = MediaKind::parse(&kind_str).unwrap_or(MediaKind::Movie);
     Ok(MediaItem {
-        media_ref: MediaRef { kind, id: r.get(1)? },
+        media_ref: MediaRef {
+            kind,
+            id: r.get(1)?,
+        },
         name: r.get(2)?,
         category_id: r.get(3)?,
         category_name: r.get(4)?,
@@ -1236,22 +1255,28 @@ mod tests {
         db.activate_profile(&second.id).unwrap();
         let survivor = db.delete_profile(&second.id).unwrap();
         assert_eq!(survivor, first);
-        assert_eq!(db.active_profile().unwrap().as_deref(), Some(first.as_str()));
+        assert_eq!(
+            db.active_profile().unwrap().as_deref(),
+            Some(first.as_str())
+        );
     }
 
     #[test]
     fn rename_and_reopen_preserve_identity_favorites_and_migration() {
-        let path = std::env::temp_dir().join(format!(
-            "marquee-test-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("marquee-test-{}.sqlite", uuid::Uuid::new_v4()));
         let mut db = Store::open(&path).unwrap();
         let provider = db.connect_provider("a", "http://a.test/").unwrap();
         let p = db.profiles().unwrap()[0].id.clone();
         db.set_favorite(&provider, &p, "series", "9", true).unwrap();
         db.rename_profile(&p, "Renamed", "red").unwrap();
-        db.update_settings(Some(false), Some(true), Some("Original language"), Some(true))
-            .unwrap();
+        db.update_settings(
+            Some(false),
+            Some(true),
+            Some("Original language"),
+            Some(true),
+        )
+        .unwrap();
         drop(db);
         let db = Store::open(&path).unwrap();
         assert_eq!(db.profiles().unwrap()[0].id, p);

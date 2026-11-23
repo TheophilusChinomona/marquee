@@ -8,11 +8,14 @@ use std::{
     ffi::{CStr, CString, c_void},
     path::{Path, PathBuf},
     ptr::NonNull,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 pub struct NativePlayer {
     api: ffi::Api,
     handle: Option<NonNull<c_void>>,
+    /// Tracks whether `MPV_EVENT_FILE_LOADED` (8) has fired for the most recent `load()`.
+    file_loaded: AtomicBool,
 }
 
 // SAFETY: mpv client functions are thread-safe. This adapter is always accessed
@@ -24,7 +27,7 @@ fn source_string(value: &str) -> Result<CString, AppError> {
 }
 
 /// Resolves the bundled pinned libmpv runtime library independently of the current
-/// working directory.
+/// working directory. On Linux, falls back to bare `"libmpv.so.2"` when not bundled.
 pub fn resolve_runtime_path(resource_dir: Option<&Path>) -> PathBuf {
     #[cfg(windows)]
     let lib_name = "libmpv-2.dll";
@@ -39,12 +42,12 @@ pub fn resolve_runtime_path(resource_dir: Option<&Path>) -> PathBuf {
         candidates.push(res.join("mpv").join(lib_name));
         candidates.push(res.join(lib_name));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("resources").join("mpv").join(lib_name));
-            candidates.push(dir.join("mpv").join(lib_name));
-            candidates.push(dir.join(lib_name));
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join("resources").join("mpv").join(lib_name));
+        candidates.push(dir.join("mpv").join(lib_name));
+        candidates.push(dir.join(lib_name));
     }
     candidates.push(
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -58,10 +61,18 @@ pub fn resolve_runtime_path(resource_dir: Option<&Path>) -> PathBuf {
             return path.clone();
         }
     }
-    candidates
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| PathBuf::from(lib_name))
+
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from(lib_name)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        candidates
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| PathBuf::from(lib_name))
+    }
 }
 
 impl NativePlayer {
@@ -77,6 +88,7 @@ impl NativePlayer {
         let player = Self {
             api,
             handle: Some(handle),
+            file_loaded: AtomicBool::new(false),
         };
         // No user mpv config, scripts, keyboard handling, or credential-bearing logs.
         for (key, value) in [
@@ -139,7 +151,23 @@ impl NativePlayer {
         }
     }
 
+    pub fn drain_events(&self) {
+        let Ok(handle) = self.ptr() else {
+            return;
+        };
+        loop {
+            let Some(event) = (unsafe { (self.api.wait_event)(handle, 0.0).as_ref() }) else {
+                return;
+            };
+            if event.id == 0 {
+                return;
+            }
+        }
+    }
+
     pub fn load(&self, source: &str, start_ms: u64) -> Result<(), AppError> {
+        self.drain_events();
+        self.file_loaded.store(false, Ordering::SeqCst);
         if start_ms > 0 {
             self.command(&[
                 "loadfile",
@@ -167,18 +195,32 @@ impl NativePlayer {
         Some(value)
     }
 
-    /// End reason 0 = natural EOF, 2 = stop, 3 = quit, 4 = error, 5 = redirect.
+    /// Polls queued mpv events. Updates `file_loaded` on `MPV_EVENT_FILE_LOADED` (8)
+    /// and returns `EndFile.reason` on `MPV_EVENT_END_FILE` (7):
+    /// 0 = natural EOF, 2 = stop, 3 = quit, 4 = error, 5 = redirect.
     pub fn poll_end_reason(&self) -> Option<i32> {
         let handle = self.ptr().ok()?;
+        let mut end_reason = None;
         loop {
             let event = unsafe { (self.api.wait_event)(handle, 0.0).as_ref() }?;
             if event.id == 0 {
-                return None;
+                return end_reason;
             }
-            if event.id == 7 && !event.data.is_null() {
-                return Some(unsafe { (*(event.data.cast::<ffi::EndFile>())).reason });
+            if event.id == 6 {
+                // MPV_EVENT_START_FILE: a new file is starting; discard any prior end_reason.
+                self.file_loaded.store(false, Ordering::SeqCst);
+                end_reason = None;
+            } else if event.id == 8 {
+                // MPV_EVENT_FILE_LOADED: new file metadata & properties are now live.
+                self.file_loaded.store(true, Ordering::SeqCst);
+            } else if event.id == 7 && !event.data.is_null() {
+                end_reason = Some(unsafe { (*(event.data.cast::<ffi::EndFile>())).reason });
             }
         }
+    }
+
+    pub fn is_file_loaded(&self) -> bool {
+        self.file_loaded.load(Ordering::SeqCst)
     }
 
     pub fn shutdown(&mut self) {

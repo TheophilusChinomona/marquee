@@ -1,0 +1,10 @@
+{
+  "mpvVersion": "0.42.0",
+  "windows-x86_64": {
+    "url": "https://github.com/mpv-player/mpv/releases/download/v0.42.0/libmpv-v0.42.0-x86_64-w64-mingw32-lgpl.zip",
+    "sha256": "8e5f77430efc53ef175804ba6618527e3af0448a0dcabf04d3cc72659d1a6fce",
+    "license": "LGPL-2.1-or-later (runtime and bundled dependency notices must be retained)",
+    "source": "https://github.com/mpv-player/mpv/tree/v0.42.0"
+  },
+  "linux-x86_64": { "status": "pending-source-build-and-native-validation" }
+}

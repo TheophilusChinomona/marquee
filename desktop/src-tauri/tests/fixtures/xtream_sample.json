@@ -1,0 +1,60 @@
+{
+  "categories": [
+    { "category_id": 10, "category_name": "Sci-Fi" },
+    { "category_id": "20", "category_name": "Drama" }
+  ],
+  "vod_streams": [
+    {
+      "stream_id": 1001,
+      "name": "Arrival (2016)",
+      "category_id": 10,
+      "stream_icon": "https://img.example.test/arrival.jpg",
+      "rating": "7.9",
+      "container_extension": "mkv",
+      "added": 1700001000
+    },
+    {
+      "stream_id": "1002",
+      "name": "Missing Art Film",
+      "category_id": "20",
+      "stream_icon": null,
+      "rating": null,
+      "container_extension": null
+    }
+  ],
+  "series_info": {
+    "info": {
+      "name": "Horizon",
+      "cover": "https://img.example.test/horizon.jpg",
+      "backdrop_path": ["https://img.example.test/horizon-bg.jpg"],
+      "plot": "Deep space investigation.",
+      "genre": "Sci-Fi, Mystery",
+      "releaseDate": "2024-05-10",
+      "rating": "8.4",
+      "episode_run_time": 52
+    },
+    "episodes": {
+      "1": [
+        {
+          "id": 9001,
+          "season": 1,
+          "episode_num": 1,
+          "title": "First Contact",
+          "container_extension": "mp4",
+          "info": { "duration_secs": 3120, "plot": "The signal arrives." }
+        }
+      ]
+    }
+  },
+  "epg": {
+    "epg_listings": [
+      {
+        "id": "epg-1",
+        "title": "RXZlbmluZyBOZXdz",
+        "description": "V29ybGQgaGVhZGxpbmVzLg==",
+        "start_timestamp": 1700000000,
+        "stop_timestamp": 1700003600
+      }
+    ]
+  }
+}

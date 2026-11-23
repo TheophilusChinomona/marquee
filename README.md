@@ -176,6 +176,12 @@ firetv-player/
 
 The bundled JSON catalogues in `assets/` make the Home rails work offline and keep the app fast. They contain provider/catalog metadata and artwork URLs only. To build them for your own provider, see `firetv-player/tools/build_catalog.py` (it reads provider credentials from `.env`, which is git-ignored).
 
+## Desktop app (Windows & Linux)
+
+A native desktop edition built with **Tauri 2**, **React + TypeScript**, **Rust**, **SQLite**, and embedded **libmpv** lives under [`desktop/`](desktop/). It brings the same cinematic interface, Xtream Codes catalogue sync, local profiles, Continue Watching, episode queues, Live TV guide, and on-device recommendations to desktop machines.
+
+See [`desktop/README.md`](desktop/README.md) for prerequisites, development commands, and Windows/Linux installer builds. Desktop builds and updates stay completely separate from the Android APK and root `version.json`.
+
 ## Privacy
 
 - Profiles, My List and resume history are local. A separate SQLite watch ledger retains completed viewing for recommendations. With a configured server and online sources enabled, viewing evidence syncs to your own server; TMDB receives title metadata queries, not profile names or viewing durations.

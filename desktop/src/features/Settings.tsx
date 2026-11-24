@@ -21,6 +21,7 @@ import {
   type DesktopApi,
 } from '../api/types';
 import { ErrorBanner, SettingRow, Toggle } from '../components/StatusView';
+import { DesktopUpdates } from './DesktopUpdates';
 
 interface SettingsProps {
   api: DesktopApi;
@@ -366,15 +367,7 @@ export default function Settings({
               <div className="about-logo">
                 MARQUEE<span>Your seat. Your stories.</span>
               </div>
-              <SettingRow title="Marquee for desktop" description="Windows & Linux · v0.1.0">
-                <span className="status-tag">DESKTOP</span>
-              </SettingRow>
-              <SettingRow
-                title="Updates"
-                description="Signed desktop updates remain unconfigured until release keys and hosting are provided."
-              >
-                <span className="subtle">Not configured</span>
-              </SettingRow>
+              <DesktopUpdates />
             </>
           )}
         </div>

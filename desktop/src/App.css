@@ -50,3 +50,14 @@
 .native-player-shell.is-fullscreen .native-player-top,
 .native-player-shell.is-fullscreen .native-player-bottom { display: none; }
 .native-player-shell.is-fullscreen .native-player-stage { position: absolute; inset: 0; }
+
+.update-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.update-error { color: #ffb4ab; }
+.desktop-update-notice {
+  position: fixed; bottom: 24px; right: 24px; z-index: 10000;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  max-width: min(680px, calc(100vw - 48px)); padding: 18px;
+  color: #f5f2ed; background: #202124; border: 1px solid #5b5546;
+  border-radius: 12px; box-shadow: 0 12px 40px #0008;
+}
+.desktop-update-notice [role="alert"] { width: 100%; color: #ffb4ab; }

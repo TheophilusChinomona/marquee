@@ -1,21 +1,55 @@
-name: Build and publish Android update
+name: Build and publish Marquee release
 on:
   push:
     branches: [master, main]
     paths-ignore: ['version.json', 'docs/**', '**.md']
   workflow_dispatch:
 permissions:
-  contents: write
+  contents: read
 concurrency:
-  group: android-release
+  group: marquee-release
   cancel-in-progress: false
 jobs:
-  release:
+  prepare:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.version.outputs.code }}
+      name: ${{ steps.version.outputs.name }}
+      tag: ${{ steps.version.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify backend and release helpers
+        run: |
+          npm ci --omit=dev --prefix resolver
+          node --test resolver/test/*.test.js scripts/*.test.cjs
+      - name: Require desktop update signing key
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: test -n "$SIGNING_KEY" || { echo 'Missing TAURI_SIGNING_PRIVATE_KEY release secret'; exit 1; }
+      - name: Select shared monotonic release version
+        id: version
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release view --json tagName > release/latest.json
+          tag=$(node -p 'require("./release/latest.json").tagName')
+          if ! gh release download "$tag" --pattern version.json --dir release; then
+            node -e 'const fs=require("fs");const latest=JSON.parse(fs.readFileSync("release/latest.json"));const legacy=require("./version.json");if(latest.tagName!=="v"+legacy.versionName)throw Error("Latest manifest unavailable; refusing unsafe version fallback");fs.copyFileSync("version.json","release/version.json");'
+          fi
+          node scripts/release-version.cjs release/version.json
+
+  android:
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
@@ -30,21 +64,6 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
           log-accepted-android-sdk-licenses: false
-      - name: Verify backend and version selection
-        run: |
-          npm ci --omit=dev --prefix resolver
-          node --test resolver/test/*.test.js scripts/release-version.test.cjs
-      - name: Select monotonic release version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p release
-          gh release view --json tagName > release/latest.json
-          if ! gh release download --pattern version.json --dir release; then
-            node -e 'const fs=require("fs");const latest=JSON.parse(fs.readFileSync("release/latest.json"));const legacy=require("./version.json");if(latest.tagName!=="v"+legacy.versionName)throw Error("Latest manifest unavailable; refusing unsafe version fallback");fs.copyFileSync("version.json","release/version.json");'
-          fi
-          node scripts/release-version.cjs release/version.json
       - name: Restore existing signing identity
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -64,26 +83,69 @@ jobs:
           PY
       - name: Build signed release and instrumentation APK
         working-directory: firetv-player
-        run: |
-          bash gradlew :app:assembleRelease :app:assembleReleaseAndroidTest -PreleaseVersionCode=${{ steps.version.outputs.code }} -PreleaseVersionName=${{ steps.version.outputs.name }} --no-daemon
-      - name: Prepare immutable updater manifest
         env:
-          VERSION_CODE: ${{ steps.version.outputs.code }}
-          VERSION_NAME: ${{ steps.version.outputs.name }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          VERSION_CODE: ${{ needs.prepare.outputs.code }}
+          VERSION_NAME: ${{ needs.prepare.outputs.name }}
+        run: bash gradlew :app:assembleRelease :app:assembleReleaseAndroidTest -PreleaseVersionCode="$VERSION_CODE" -PreleaseVersionName="$VERSION_NAME" --no-daemon
+      - name: Prepare Android updater manifest
+        env:
+          VERSION_CODE: ${{ needs.prepare.outputs.code }}
+          VERSION_NAME: ${{ needs.prepare.outputs.name }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
         run: |
+          mkdir -p release
           cp firetv-player/app/build/outputs/apk/release/app-release.apk release/Marquee.apk
           node - <<'JS'
           const fs=require('fs'),crypto=require('crypto');
-          const manifest={versionCode:Number(process.env.VERSION_CODE),versionName:process.env.VERSION_NAME,apkUrl:`https://github.com/${process.env.GH_REPO}/releases/download/${process.env.RELEASE_TAG}/Marquee.apk`,sha256:crypto.createHash('sha256').update(fs.readFileSync('release/Marquee.apk')).digest('hex'),notes:`Marquee ${process.env.VERSION_NAME}: updates from the default branch. Native TV verification is separate from CI builds.`};
+          const manifest={versionCode:Number(process.env.VERSION_CODE),versionName:process.env.VERSION_NAME,apkUrl:`https://github.com/${process.env.GH_REPO}/releases/download/${process.env.RELEASE_TAG}/Marquee.apk`,sha256:crypto.createHash('sha256').update(fs.readFileSync('release/Marquee.apk')).digest('hex'),notes:`Marquee ${process.env.VERSION_NAME}: Android and desktop release.`};
           fs.writeFileSync('release/version.json',JSON.stringify(manifest,null,2)+'\n');
           JS
-      - name: Publish APK and manifest together
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          gh release create "$RELEASE_TAG" release/Marquee.apk release/version.json --target "$GITHUB_SHA" --draft --title "Marquee $RELEASE_TAG" --notes "Automatic signed Android release from the default branch. Backend and version tests pass and Android release/test APKs compile. Device instrumentation and memory soak are separate checks; see the change history for validation details."
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: marquee-android-release
+          path: release/*
+          if-no-files-found: error
       - name: Remove signing material
         if: always()
         run: rm -f firetv-player/release-ci.keystore firetv-player/keystore.properties
+
+  desktop:
+    needs: prepare
+    uses: ./.github/workflows/desktop.yml
+    with:
+      release_version: ${{ needs.prepare.outputs.name }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+  publish:
+    needs: [prepare, android, desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION_NAME: ${{ needs.prepare.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: marquee-*
+          merge-multiple: true
+          path: release
+      - name: Validate all platform assets and create desktop update manifest
+        run: node scripts/desktop-release.cjs manifest release "$VERSION_NAME" "$GH_REPO" "$RELEASE_TAG"
+      - name: Publish complete release
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --json isDraft,targetCommitish > existing-release.json; then
+            node -e 'const r=require("./existing-release.json");if(!r.isDraft||r.targetCommitish!==process.env.GITHUB_SHA)throw Error("Refusing to overwrite a public release or another commit draft");'
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            gh release create "$RELEASE_TAG" release/* --target "$GITHUB_SHA" --draft --title "Marquee $RELEASE_TAG" --notes "Marquee $VERSION_NAME for Android, Windows and Linux. Windows and AppImage builds support signed in-app updates. Debian users install the new package manually. Existing desktop 0.1.0 users must install this updater-enabled build once. Device playback and two-version update smoke tests remain separate verification."
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest

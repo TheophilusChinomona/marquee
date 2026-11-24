@@ -9,6 +9,7 @@ mod provider;
 mod recommendations;
 mod state;
 mod store;
+mod updates;
 
 use catalog::CatalogService;
 use player::service::PlayerService;
@@ -22,6 +23,8 @@ pub fn run() {
         .manage(PlayerService::default())
         .manage(CatalogService::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             let data_dir = app
@@ -103,6 +106,8 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            updates::update_context,
+            updates::prepare_update,
             commands::online_connect,
             commands::online_disconnect,
             commands::online_check,

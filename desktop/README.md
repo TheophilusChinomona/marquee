@@ -102,5 +102,22 @@ npx tauri build --config src-tauri/tauri.linux.conf.json --bundles deb,appimage
 
 - **Embedded playback runtime**: Windows bundles pinned `libmpv-2.dll` (mpv 0.42.0 LGPL); see `resources/THIRD_PARTY_NOTICES.md`.
 - **Linux display modes**: Linux X11/XWayland/Wayland surface embedding is still pending native Linux display verification (see `VALIDATION.md`).
-- **Desktop updates**: Signed Tauri updates remain explicitly unconfigured until release signing keys and update hosting are configured. Android APK updates (`version.json`) remain completely separate.
+- **Desktop updates**: Installed release builds check on startup and offer **Update and restart**. You can also check in **Settings → About Marquee**. Windows NSIS and Linux AppImage support signed in-app installation; Debian users download and install the new `.deb` manually. Background network failures never block app startup. Development builds and browser previews do not check production updates.
+- **First updater-enabled installation**: Existing `0.1.0` builds have no updater. Download and install an updater-enabled release once; later releases appear in the app. Installation saves playback and restarts Marquee only after you choose to update.
 - **Troubleshooting**: If playback reports *"Player runtime unavailable"*, re-run `scripts/setup-mpv.ps1` (Windows) or install `libmpv2` / re-run `scripts/setup-mpv.sh` (Linux).
+
+## Shared GitHub Releases
+
+The **Build and publish Marquee release** workflow publishes Android, Windows, and Linux together using one version and commit. Eligible pushes to the default branch (or a manual run on that branch) retain the existing Android automatic patch increment. To prepare a larger version bump, increase both `versionCode` and `versionName` defaults in `firetv-player/app/build.gradle.kts`. The prepared semantic version must exceed the latest published version; legacy two-part versions normalize to three parts.
+
+CI selects the shared version once, sets Android build properties, and updates desktop package/Tauri/Cargo metadata in the build checkout. All platform tests and builds must pass before a release is published. A failed build leaves the previous release available. Re-running a failed publication can reuse a draft for the same commit, but cannot overwrite a public release or another commit's draft.
+
+Each release contains `Marquee.apk`, Android's compatible `version.json`, Windows NSIS `.exe`, Linux `.AppImage` and `.deb`, desktop `.sig` files, and `latest.json` for the Tauri updater. The desktop PR workflow continues to create unsigned Actions artifacts without release secrets. Desktop update signatures are independent of Android APK signing and do not provide Windows Authenticode signing.
+
+### Updater signing identity
+
+`desktop/src-tauri/tauri.conf.json` contains the public verification key. GitHub Actions uses the repository secret `TAURI_SIGNING_PRIVATE_KEY` to sign release installers. The private key backup on the setup machine is `%LOCALAPPDATA%\Marquee\release-signing\marquee.key` (with its `.pub` companion), outside the repository and restricted to the current Windows user and SYSTEM. Keep a secure independent backup of this identity: replacing or losing it prevents existing installations from trusting new updates. Never commit or print its contents. The generated key has no password; CI explicitly supplies an empty signing password.
+
+Ordinary local installer builds do not require the signing key. For a local signed release test, set `TAURI_SIGNING_PRIVATE_KEY` to the backup file path and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to an empty string, run `node scripts/desktop-release.cjs prepare <version>` from the repository root, then build with the platform command above. Preparation modifies version files and enables updater artifact generation in that checkout; use a disposable checkout for this test.
+
+Before relying on the first production update, smoke-test installation from one updater-enabled version to a higher version on Windows and Linux AppImage. This device check is separate from unit tests and CI compilation.
